@@ -1,0 +1,28 @@
+{
+  "body": {
+    "data": [
+      {
+        "description": "分组说明",
+        "links": [
+          {
+            "avatar": "https://l.example/a.png",
+            "color": "#f08",
+            "description": "友链说明",
+            "id": "l1",
+            "latency": 12.5,
+            "name": "友链",
+            "url": "https://l.example"
+          }
+        ],
+        "name": "友达",
+        "order": 0
+      }
+    ],
+    "meta": {
+      "count": 1
+    },
+    "ok": true,
+    "requestId": "golden"
+  },
+  "status": 200
+}

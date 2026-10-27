@@ -1,0 +1,198 @@
+# ============================================================
+# 生产只读配置（可以进 git：这里只有开关，没有任何密钥）
+# ------------------------------------------------------------
+# 用途：把服务接到**生产库的只读视图**上，用真实数据验证查询逻辑。
+#   · database.readOnly = true → 适配器里所有写方法返回 store.ErrReadOnly
+#   · 图床 / 邮件 / 初筛 / 摘要全部关闭（它们有外部副作用或必然要写库）
+#
+# 启动方式（ENV_FILE 指定生产变量文件，避免把生产值写进 .env.dev）：
+#   ENV_FILE=.env.production CONFIG_FILE=./config.prod-readonly.yml go run ./cmd/server
+#
+# 线上部署**不要**用这个文件。
+# ============================================================
+
+# ============================================================
+# AriablogNext Go 后端 · 唯一配置入口
+# ------------------------------------------------------------
+# 约定：
+# 1) 所有配置都在这个文件里，程序**不直接读环境变量**（唯一例外是 CONFIG_FILE，
+#    见文末），避免 os.Getenv 散落在代码各处后没人知道到底配了什么。
+# 2) 敏感值一律写成 {{ env.变量名 }} 的形式，启动时从环境变量解析。
+#    注意两种「缺」不一样：
+#      · 变量**根本没定义** → 启动失败（拼错名字的典型症状）
+#      · 变量**定义为空** → 允许，交给 enabled 开关判断
+#    所以本机没有的密钥请在 .env 里显式写成 `KEY=`，不要直接不写。
+# 3) 这个文件会通过 go:embed 编进二进制，所以改配置 = 重新部署。
+#    本地调试想临时换配置，用环境变量 CONFIG_FILE 指向另一个文件。
+# 4) 未知字段会被拒绝（解析时开 KnownFields），拼错立刻报错。
+#    环境文件分三份，都不进 git：
+#      .env.dev        日常开发（本机 mongod + AriaBlogNext_dev + 外部服务全空）
+#      .env.production 生产值留档（对应 Vercel 的 Environment Variables）
+#      config.local.yml 本地配置变体（config.yml 的四路外部依赖 enabled: false）
+# 5) 布尔开关决定功能是否注册：enabled=true 但密钥不全 → 启动失败；
+#    enabled=false → 路由直接不注册，不会出现「一半能用一半 503」。
+# ============================================================
+
+server:
+  # 监听地址。留空 = 由 config 包自己去读环境变量 PORT（Vercel 注入），
+  # 读不到则回退 127.0.0.1:2333（本地开发）。
+  # 注意：这是「读环境变量」的唯一豁免点，且必须写在 internal/config 里。
+  listen: ""
+  # 所有「哪一年 / 哪一月」的划分都用这个时区，不依赖运行环境 TZ
+  timezone: Asia/Shanghai
+  # 默认单请求处理时限，超时返回 504 timeout.exceeded
+  requestTimeout: 8s
+  # 个别接口覆盖上面的默认值（导出要扫全库、摘要要等模型）
+  timeoutOverrides:
+    /posts/summary: 90s
+    /maintenance/export: 120s
+    /images/import: 30s
+    /links/theme-color: 15s
+  # 单个请求连数据库的超时
+  dbTimeout: 5s
+
+  bodyLimit:
+    default: 1MB # 普通 JSON 接口
+    markdown: 2MB # PUT /posts/content、PUT /drafts/content
+    image: 4MB # /images/upload、/images/reupload（Vercel 平台硬上限 4.5MB）
+
+  cors:
+    allowOrigins: ["*"]
+    allowCredentials: true
+    allowHeaders: ["*"]
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+
+list:
+  defaultPageSize: 16
+  maxPageSize: 100
+  # pageSize=full 的硬上限：超过就报 validation.invalid_field，避免一次拉爆
+  maxFullItems: 300
+
+rateLimit:
+  # 进程内限流（多实例下按实例独立，与旧后端等价）
+  global: { requests: 300, window: 1m }
+  login: { requests: 10, window: 10m } # 旧后端是 5 次，放宽
+  linkApply: { requests: 5, window: 30m }
+  themeColor: { requests: 60, window: 1h }
+
+database:
+  # 目前只实现 mongo；以后加 postgres/sqlite 只改这里 + 一个适配器包
+  type: mongo
+  uri: "{{ env.MONGODB_URI }}"
+  name: "{{ env.DB_NAME }}"
+  pool:
+    max: 20 # Vercel 单实例并发有限，池子不用开大
+    min: 0
+    idleTimeout: 5m
+  # 只读模式：true 时适配器里的所有写方法直接返回 store.ErrReadOnly，
+  # 用来「连生产库跑真实数据的只读验证」。线上必须是 false。
+  readOnly: true
+
+auth:
+  jwtSecret: "{{ env.SECRET }}"
+  jwtAlgorithm: HS256
+  jwtTTL: 168h # 7 天
+  # 服务间调用（GitHub Actions 回写初筛、check-flink 上报延迟、备份导出）
+  # 沿用同一个 SECRET，都在环境变量里，泄漏面没有变化
+  internalToken: "{{ env.SECRET }}"
+
+site:
+  name: Ariasakaの小窝
+  url: https://blog.yaria.top
+  # 更新站点信息后通知博客站刷缓存（失败不影响主流程）
+  refreshUrl: https://blog.yaria.top/refreshCache
+  # 友链通知邮件里的「去后台处理」按钮
+  adminPanelUrl: http://ds.yaria.top/admin/flinks
+
+search:
+  maxKeywordLength: 64
+  # context 片段：命中处前后各取多少字
+  contextRadius: 50
+  # 标题命中的结果排在正文命中之前
+  titleBoost: true
+
+# ---------------- 以下为可选功能区：enabled 控制是否注册路由 ----------------
+
+media:
+  # 图床（Cloudflare R2，S3 兼容）。enabled=true 时下面 5 项必须全配
+  # 关掉：不需要图床
+  enabled: false
+  s3:
+    endpoint: "{{ env.S3_ENDPOINT }}"
+    accessKeyId: "{{ env.S3_ACCESSKEYID }}"
+    secretAccessKey: "{{ env.S3_SECRETACCESSKEY }}"
+    region: "{{ env.S3_REGION }}" # R2 用 us-east-1
+    bucket: "{{ env.S3_BUCKET }}"
+    publicUrl: "{{ env.S3_PUBLIC_URL }}"
+  upload:
+    maxBytes: 4MB
+    allowedTypes: ["image/jpeg", "image/png", "image/webp", "image/gif"]
+  import:
+    maxBytes: 3MB # 外链转存上限
+    timeout: 20s
+
+mail:
+  # 友链申请的回执与审核通知。全空时自动跳过（旧后端行为）
+  # 关掉：不发真邮件
+  enabled: false
+  host: "{{ env.SMTP_HOST }}"
+  port: "{{ env.SMTP_PORT }}"
+  secure: "{{ env.SMTP_SECURE }}" # true/ssl(465) | starttls(587) | false
+  user: "{{ env.SMTP_USER }}"
+  pass: "{{ env.SMTP_PASS }}"
+  from: "{{ env.SMTP_FROM }}"
+  fromName: "友链"
+
+flink:
+  maxName: 50
+  maxDescription: 200
+  maxUrl: 300
+  pendingLimit: 20 # 待审队列上限
+  retentionDays: 14 # 审核结果保留天数
+  adminEmail: "{{ env.FLINK_ADMIN_EMAIL }}"
+
+  # AI 初筛：申请入库后触发 GitHub Actions 抓站分析，结论回写本服务
+  screening:
+    # 关掉：不触发 GitHub Actions
+    enabled: false
+    repo: "{{ env.GITHUB_REPO }}"
+    token: "{{ env.GH_TOKEN }}"
+
+  # 链路延迟检查：手动触发外部 check-flink 仓库的 workflow
+  latencyCheck:
+    # 只读验证不触发外部 Actions
+    enabled: false
+    repo: lyxofficial/check-flink
+    workflow: check_links.yml
+    token: "{{ env.GH_TOKEN }}"
+
+ai:
+  summary:
+    # 摘要生成会写 PostSummary，关掉
+    enabled: false
+    endpoint: https://api.siliconflow.cn/v1/chat/completions
+    model: Qwen/Qwen3-8B
+    apiKey: "{{ env.SF_TOKEN }}"
+    timeout: 60s
+    # 同一篇的缓存冷却，避免被反复触发（旧后端 10 分钟）
+    cooldown: 10m
+
+  embedding:
+    # 语义搜索的预留位，现在不实现：/posts/semantic 固定返回 501
+    # 以后启用了再填 provider/model/apiKey，并跑 cmd/build-embeddings
+    enabled: false
+    provider: ""
+    model: ""
+    apiKey: "{{ env.EMBEDDING_API_KEY }}"
+
+features:
+  # 全库导出（外部备份 Action 依赖），保持开启
+  export: true
+  # 语义搜索，与 ai.embedding.enabled 联动：都为 true 才会真的干活
+  semanticSearch: false
+
+# ------------------------------------------------------------
+# 唯一允许直接读的环境变量：CONFIG_FILE
+#   本地调试可用 CONFIG_FILE=./config.local.yml 覆盖上面全部内容；
+#   不设时使用编译进二进制的这份。
+# ------------------------------------------------------------

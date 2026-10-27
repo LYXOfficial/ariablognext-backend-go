@@ -1,0 +1,24 @@
+{
+  "body": {
+    "data": {
+      "bannerImg": "https://img.0v0.my/g.png",
+      "category": "技术",
+      "coverFit": "center",
+      "description": "摘要",
+      "lastUpdatedTime": 1750000100,
+      "mdContent": "# 快照文章\n\n正文",
+      "plainContent": "正文摘要",
+      "publishTime": 1750000000,
+      "slug": "golden-post",
+      "tags": [
+        "go",
+        "测试"
+      ],
+      "title": "快照文章",
+      "wordCount": 120
+    },
+    "ok": true,
+    "requestId": "golden"
+  },
+  "status": 200
+}

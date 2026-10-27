@@ -1,0 +1,24 @@
+{
+  "body": {
+    "data": [
+      {
+        "count": 1,
+        "name": "go"
+      },
+      {
+        "count": 1,
+        "name": "测试"
+      },
+      {
+        "count": 1,
+        "name": "生活"
+      }
+    ],
+    "meta": {
+      "count": 3
+    },
+    "ok": true,
+    "requestId": "golden"
+  },
+  "status": 200
+}

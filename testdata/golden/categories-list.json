@@ -1,0 +1,20 @@
+{
+  "body": {
+    "data": [
+      {
+        "count": 1,
+        "name": "技术"
+      },
+      {
+        "count": 1,
+        "name": "随笔"
+      }
+    ],
+    "meta": {
+      "count": 2
+    },
+    "ok": true,
+    "requestId": "golden"
+  },
+  "status": 200
+}

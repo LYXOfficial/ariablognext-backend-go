@@ -1,0 +1,12 @@
+{
+  "body": {
+    "error": {
+      "code": "search.not_implemented",
+      "details": null,
+      "message": "语义搜索还没做，先用关键词搜索"
+    },
+    "ok": false,
+    "requestId": "golden"
+  },
+  "status": 501
+}

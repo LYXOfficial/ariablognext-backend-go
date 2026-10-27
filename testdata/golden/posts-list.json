@@ -1,0 +1,46 @@
+{
+  "body": {
+    "data": [
+      {
+        "bannerImg": "https://img.0v0.my/g.png",
+        "category": "技术",
+        "coverFit": "center",
+        "description": "摘要",
+        "lastUpdatedTime": 1750000100,
+        "plainContent": "正文摘要",
+        "publishTime": 1750000000,
+        "slug": "golden-post",
+        "tags": [
+          "go",
+          "测试"
+        ],
+        "title": "快照文章",
+        "wordCount": 120
+      },
+      {
+        "bannerImg": "",
+        "category": "随笔",
+        "coverFit": null,
+        "description": null,
+        "lastUpdatedTime": 1749990000,
+        "plainContent": "另一段",
+        "publishTime": 1749990000,
+        "slug": "golden-post-2",
+        "tags": [
+          "生活"
+        ],
+        "title": "第二篇",
+        "wordCount": null
+      }
+    ],
+    "meta": {
+      "count": 2,
+      "hasMore": false,
+      "page": 1,
+      "pageSize": 2
+    },
+    "ok": true,
+    "requestId": "golden"
+  },
+  "status": 200
+}

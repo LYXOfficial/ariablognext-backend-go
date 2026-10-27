@@ -1,0 +1,19 @@
+{
+  "body": {
+    "error": {
+      "code": "validation.missing_field",
+      "details": {
+        "fields": [
+          {
+            "field": "slug",
+            "message": "必填"
+          }
+        ]
+      },
+      "message": "缺少必填参数 slug"
+    },
+    "ok": false,
+    "requestId": "golden"
+  },
+  "status": 400
+}

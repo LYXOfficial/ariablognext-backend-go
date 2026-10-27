@@ -1,0 +1,17 @@
+{
+  "body": {
+    "data": [
+      {
+        "count": 2,
+        "month": 6,
+        "year": 2025
+      }
+    ],
+    "meta": {
+      "count": 1
+    },
+    "ok": true,
+    "requestId": "golden"
+  },
+  "status": 200
+}

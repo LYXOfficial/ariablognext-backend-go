@@ -1,0 +1,20 @@
+{
+  "body": {
+    "data": [
+      {
+        "content": "说说内容",
+        "plainContent": "说说内容",
+        "time": 1750000000
+      }
+    ],
+    "meta": {
+      "count": 1,
+      "hasMore": false,
+      "page": 1,
+      "pageSize": 1
+    },
+    "ok": true,
+    "requestId": "golden"
+  },
+  "status": 200
+}

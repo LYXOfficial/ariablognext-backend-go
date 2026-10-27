@@ -1,0 +1,27 @@
+# 本地配置覆盖（含可能填入的真实密钥），绝不提交
+config.local.yml
+.env
+.env.*
+!.env.example
+
+# 构建产物
+/bin/
+/server
+/dist/
+*.exe
+*.test
+*.out
+
+# 编辑器和系统
+.vscode/
+.idea/
+.DS_Store
+
+# 测试产物
+/coverage.out
+/coverage.html
+/testdata/tmp/
+
+# Python 冒烟脚本的缓存
+__pycache__/
+*.pyc

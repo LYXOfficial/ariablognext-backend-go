@@ -1,0 +1,12 @@
+{
+  "body": {
+    "error": {
+      "code": "not_found.route",
+      "details": null,
+      "message": "接口不存在，请检查路径与方法（旧后端路径已全部下线）"
+    },
+    "ok": false,
+    "requestId": "golden"
+  },
+  "status": 404
+}

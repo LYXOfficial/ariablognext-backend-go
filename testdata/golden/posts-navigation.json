@@ -1,0 +1,16 @@
+{
+  "body": {
+    "data": {
+      "newer": null,
+      "older": {
+        "bannerImg": "",
+        "publishTime": 1749990000,
+        "slug": "golden-post-2",
+        "title": "第二篇"
+      }
+    },
+    "ok": true,
+    "requestId": "golden"
+  },
+  "status": 200
+}
