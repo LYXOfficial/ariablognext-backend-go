@@ -1,5 +1,6 @@
 # 本地配置覆盖（含可能填入的真实密钥），绝不提交
 config.local.yml
+config.prod-readonly.yml
 .env
 .env.*
 !.env.example

@@ -215,6 +215,23 @@ go 侧已按用户要求进入守候状态：发现问题就修，修完在 P4_D
 `ensureIndexes` 已在线上库幂等建好 7 个索引。邮件/GitHub dispatch/R2 上传也都是真实副作用。
 此前「生产库只读」的铁律自本条起按用户指示解除（仅限本地这套全权限实例）。
 
+## 7.5 行为不一致批量审计（2026-10-27 中午，用户要求「全部揪出来」）
+
+用生产真实数据逐接口对比新旧后端，又修掉 4 个真实不一致（详见 `docs/pitfalls.md` #27/#28）：
+
+1. **取色算法**：逐行复刻旧实现（BOX 64×64 → 跳透明/极浅/极深 → HSL 分桶彩度加权 →
+   normalize_for_card），复验 3/6 头像颜色与旧后端完全一致、3/6 仅 ±1~4 通道差
+   （BOX 缩放边界实现差异，视觉无感知，用户确认不追）。修前 6/6 全不同且出现
+   `#000000`/`#fdfdfd` 废色。
+2. **webp 头像**：加 `golang.org/x/image/webp`+`bmp`（decode-only）——⚠️ 依赖清单外
+   偏离，为行为一致必须加。
+3. **图片转存魔数嗅探**：content-type 不可信（octet-stream），复刻旧 `sniff_image_type`。
+4. **口径对齐**：wordCount 作用于 markdown 原文、公式复刻旧正则（`\p{L}\p{N}_` + CJK
+   逐字，双计口径）；文章 plainContent 换行压空格截 201；说说 plainContent 用
+   `replace_and_remove_tags`（<a>→[链接]、<img>→[图片]）。
+5. **环境变量语义修订**：未定义 → 按空处理（EMBEDDING_API_KEY 类预留占位符不再逼着
+   每个环境定义）；必填性由 Validate 保证，校验失败时列出未定义名单。
+
 ## 八、sync 信箱（glue ↔ go 唯一通信通道）
 
 工作区根目录 `sync/`（协议见 `sync/README.md`）。go 侧强制检查点：每次开始干活前、

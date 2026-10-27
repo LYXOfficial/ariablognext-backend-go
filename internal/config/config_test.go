@@ -238,3 +238,18 @@ func TestLocationIsExplicit(t *testing.T) {
 		t.Error("Location 不能是 time.Local")
 	}
 }
+
+// 未定义的可选环境变量按空处理、不阻止启动（EMBEDDING_API_KEY 类问题的回归测试）：
+// embedding 关着、apiKey 引用一个从未定义的变量 → Load 必须成功。
+func TestUndefinedOptionalEnvBootsFine(t *testing.T) {
+	y := strings.Replace(baseYAML,
+		`embedding: {enabled: false, provider: "", model: "", apiKey: ""}`,
+		`embedding: {enabled: false, provider: "", model: "", apiKey: "{{ env.TEST_NEVER_DEFINED }}"}`, 1)
+	cfg, err := loadForTest(t, y)
+	if err != nil {
+		t.Fatalf("未定义的可选变量不应阻止启动：%v", err)
+	}
+	if cfg.AI.Embedding.APIKey != "" {
+		t.Errorf("应为空：%q", cfg.AI.Embedding.APIKey)
+	}
+}

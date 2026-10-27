@@ -2,33 +2,31 @@
 // 无状态、无 IO，方便单测覆盖到每一种语法。
 package textutil
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
-// WordCount 统计「中文字符 + 英文单词」的中英混合字数。
-// 规则：连续的 CJK 字符每个算 1；连续的 ASCII 字母/数字串算 1 个词；
-// 空白与标点不计。这与旧前端的字数展示语义一致（一篇 1830 字的文章）。
-// wordCount 是给读者看的规模感，不是语言学精确计数——保持简单可复现。
+// wordRe / cjkRe 复刻旧后端 updatePostMarkdown 的字数口径：
+//
+//	wordCount = len(re.findall(r"\b\w+\b", md)) + len(re.findall(r"[\u4e00-\u9fff]", md))
+//
+// 注意两点：
+//  1. Python 的 \w 是 Unicode-aware（汉字也是词字符），Go 的 \w 是 ASCII-only——
+//     所以这里用 \p{L}\p{N}_ 精确复刻 Python 语义；
+//  2. 连续汉字会被 \b\w+\b 整体算一个词、又被 CJK 正则逐字再算一遍——
+//     这个「双计」是旧后端的既有行为，博客字数展示口径依赖它，不要顺手修正。
+var (
+	wordRe = regexp.MustCompile(`[\p{L}\p{N}_]+`)
+	cjkRe  = regexp.MustCompile(`[\x{4e00}-\x{9fff}]`)
+)
+
+// WordCount 统计中英混合字数（旧公式，作用于 markdown 原文）。
 func WordCount(text string) int {
 	if text == "" {
 		return 0
 	}
-	count := 0
-	inWord := false
-	for _, r := range text {
-		switch {
-		case isCJK(r):
-			count++
-			inWord = false
-		case isASCIILetterOrDigit(r):
-			if !inWord {
-				count++
-				inWord = true
-			}
-		default:
-			inWord = false
-		}
-	}
-	return count
+	return len(wordRe.FindAllString(text, -1)) + len(cjkRe.FindAllString(text, -1))
 }
 
 func isCJK(r rune) bool {

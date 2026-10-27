@@ -228,9 +228,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("解析 YAML 失败：%w", err)
 	}
 
-	if err := resolveEnv(tree); err != nil {
-		return nil, err
-	}
+	undefinedEnv := resolveEnv(tree)
 
 	out, err := yaml.Marshal(tree)
 	if err != nil {
@@ -244,6 +242,12 @@ func Load() (*Config, error) {
 	}
 
 	if err := cfg.Validate(); err != nil {
+		// 校验失败时附上未定义名单：拼错的变量名在这里能看出来
+		//（必填项变成了空值才会走到这）
+		if len(undefinedEnv) > 0 {
+			err = fmt.Errorf("%w\n另：这些被引用的环境变量未定义（已按空处理）：%s",
+				err, strings.Join(undefinedEnv, ", "))
+		}
 		return nil, err
 	}
 	// listen 留空时在这里解析 PORT：这是 config.yml 之外唯一要读环境变量地址的地方，
@@ -280,20 +284,17 @@ func loadDotenv() error {
 }
 
 // resolveEnv 递归替换树里所有 {{ env.NAME }} 整串占位符。
-// 缺失的变量一次性全部报出来——报一个改一个太折磨人。
-func resolveEnv(tree map[string]any) error {
-	missing, err := resolveEnvTree(tree)
-	if err != nil {
-		return err
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("配置引用了未定义的环境变量：%s（变量没定义和定义为空是两回事，请检查拼写或在 .env 里补上）",
-			strings.Join(missing, ", "))
-	}
-	return nil
+//
+// 未定义的变量**按空处理**、只记录名字（EMBEDDING_API_KEY 这类为未实现功能预留的
+// 占位符不应该逼着每个环境都定义一遍）；「这个值是不是必填」由 Validate 决定——
+// 必填缺失或「子系统已启用但密钥为空」照样启动失败，且错误里会带上未定义名单，
+// 拼错名字仍然查得出来。
+func resolveEnv(tree map[string]any) []string {
+	missing, _ := resolveEnvTree(tree)
+	return missing
 }
 
-// resolveEnvTree 就地替换占位符，返回缺失变量名列表。
+// resolveEnvTree 就地替换占位符，返回未定义变量名列表（已按空替换）。
 func resolveEnvTree(tree map[string]any) ([]string, error) {
 	var missing []string
 	var walk func(node any) any
@@ -362,7 +363,7 @@ func (c *Config) Validate() error {
 
 	// —— 必填 ——
 	if c.Database.URI == "" {
-		addf("database.uri 不能为空（MONGODB_URI 未定义或为空）")
+		addf("database.uri 不能为空（检查 {{ env.MONGODB_URI }}）")
 	}
 	if c.Database.Name == "" {
 		addf("database.name 不能为空（DB_NAME 未定义或为空）")

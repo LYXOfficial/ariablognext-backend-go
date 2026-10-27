@@ -92,15 +92,18 @@ func (s *ImageStore) List() app.Handler {
 		if err != nil {
 			return nil, err
 		}
+		// 非图片文件（字体 fonts/*.woff2、备份等）不进列表：dashboard 把每个元素
+		// 直接当 <img> 渲染，混入非图片只会显示裂图。扩展名判断与上传白名单同源。
+		kept := filterImageEntries(items)
 		// 按最后修改时间倒序（契约 §3.8「按日期倒序」；旧后端也是排序后返回）
-		sort.Slice(items, func(i, j int) bool {
-			return items[i].LastModified > items[j].LastModified
+		sort.Slice(kept, func(i, j int) bool {
+			return kept[i].LastModified > kept[j].LastModified
 		})
-		urls := make([]string, 0, len(items))
-		for _, it := range items {
+		urls := make([]string, 0, len(kept))
+		for _, it := range kept {
 			urls = append(urls, it.URL)
 		}
-		return map[string]any{"images": urls, "items": items}, nil
+		return map[string]any{"images": urls, "items": kept}, nil
 	}
 }
 
@@ -231,6 +234,24 @@ func (s *ImageStore) keyFromURL(rawURL string) (string, error) {
 		return "", apperr.InvalidField("url", "图片地址为空")
 	}
 	return key, nil
+}
+
+// filterImageEntries 只保留图片扩展名的对象（大小写不敏感），返回新切片。
+// 判断与上传白名单（allowedExt）同源：jpg/jpeg/png/webp/gif。
+func filterImageEntries(items []platform.ImageObject) []platform.ImageObject {
+	kept := make([]platform.ImageObject, 0, len(items))
+	for _, it := range items {
+		if isImageKey(it.Key) {
+			kept = append(kept, it)
+		}
+	}
+	return kept
+}
+
+// isImageKey 按扩展名判断是否图片（大小写不敏感）。
+func isImageKey(key string) bool {
+	_, ok := allowedExt[strings.ToLower(filepath.Ext(key))]
+	return ok
 }
 
 func extFromContentType(ct string) string {

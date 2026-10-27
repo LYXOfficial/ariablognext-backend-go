@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -10,6 +11,25 @@ import (
 
 	"github.com/LYXOfficial/ariablognext-backend-go/internal/apperr"
 )
+
+// SniffImageType 按魔数判断图片类型，复刻旧 update/image/main.py 的
+// sniff_image_type（content-type 不可信，如 octet-stream）。
+// bmp 在旧转存里同样被拒（CONTENT_TYPE_EXT 没有 image/bmp 条目），这里不收。
+func SniffImageType(body []byte) string {
+	if bytes.HasPrefix(body, []byte("\x89PNG\r\n\x1a\n")) {
+		return "image/png"
+	}
+	if bytes.HasPrefix(body, []byte("\xff\xd8\xff")) {
+		return "image/jpeg"
+	}
+	if bytes.HasPrefix(body, []byte("GIF87a")) || bytes.HasPrefix(body, []byte("GIF89a")) {
+		return "image/gif"
+	}
+	if len(body) >= 12 && bytes.Equal(body[:4], []byte("RIFF")) && bytes.Equal(body[8:12], []byte("WEBP")) {
+		return "image/webp"
+	}
+	return ""
+}
 
 // FetchExternalImage 下载外链图片（图床转存用）。
 // SSRF 校验与 theme-color 同语义：只允许 http(s)、拒绝解析到私网/环回的主机
@@ -49,7 +69,12 @@ func FetchExternalImage(ctx context.Context, rawURL string, maxBytes int, timeou
 	if len(body) > maxBytes {
 		return nil, "", apperr.New(apperr.ImageTooLarge, "图片超过转存大小上限，请先压缩", nil)
 	}
-	return body, resp.Header.Get("Content-Type"), nil
+	// 与旧后端一致：魔数嗅探优先（content-type 不可信），嗅不出就拒绝
+	if ct := SniffImageType(body); ct != "" {
+		return body, ct, nil
+	}
+	return nil, "", apperr.New(apperr.ImageUnsupportedType,
+		"对方返回的不是支持的图片格式（jpeg/png/gif/webp）", nil)
 }
 
 func itoa(n int) string {

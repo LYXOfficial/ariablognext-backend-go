@@ -186,3 +186,38 @@ func TestImagesListReturnsURLStrings(t *testing.T) {
 		t.Errorf("images 元素应为 string，实际 %T", any0)
 	}
 }
+
+// 图床列表只保留图片扩展名（2026-10-27 修）：
+// 桶里还躺着字体（fonts/SimHei.woff2）等非图片文件，dashboard 把每个元素
+// 直接当 <img> 渲染，混入非图片只会显示裂图。过滤与上传白名单同源。
+func TestFilterImageEntries(t *testing.T) {
+	items := []platform.ImageObject{
+		{Key: "2026/10/25/a.webp", URL: "u-webp"},
+		{Key: "2026/10/25/b.JPG", URL: "u-jpg-upper"}, // 大写扩展名
+		{Key: "2026/10/26/c.jpeg", URL: "u-jpeg"},
+		{Key: "fonts/SimHei.woff2", URL: "u-woff2"}, // 字体
+		{Key: "backup.tar.gz", URL: "u-tar"},        // 无图片扩展名
+		{Key: "noext", URL: "u-noext"},              // 无扩展名
+	}
+	kept := filterImageEntries(items)
+	if len(kept) != 3 {
+		t.Fatalf("应保留 3 张图片，得到 %d：%v", len(kept), kept)
+	}
+	want := map[string]bool{"u-webp": true, "u-jpg-upper": true, "u-jpeg": true}
+	for _, it := range kept {
+		if !want[it.URL] {
+			t.Errorf("不应保留 %s", it.URL)
+		}
+	}
+	// 原切片不被改动
+	if len(items) != 6 {
+		t.Errorf("原切片不应被修改：%d", len(items))
+	}
+	// isImageKey 逐个断言（含大小写与无扩展名）
+	if !isImageKey("x.png") || !isImageKey("x.PNG") || !isImageKey("a/b.jpeg") {
+		t.Error("图片扩展名应识别")
+	}
+	if isImageKey("fonts/SimHei.woff2") || isImageKey("noext") || isImageKey("x.webp.orig") {
+		t.Error("非图片扩展名不应识别")
+	}
+}

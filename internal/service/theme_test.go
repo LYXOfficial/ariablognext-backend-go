@@ -55,7 +55,7 @@ func makeTestPNG(size int, c color.RGBA) []byte {
 }
 
 func TestThemeColorFromServer(t *testing.T) {
-	// 本地起一个 HTTP 服务当「头像站」，验证下载→解码→取色全链路
+	// 本地起一个 HTTP 服务当「头像站」，验证下载→解码→取色全链路（旧算法复刻）
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(makeTestPNG(32, color.RGBA{R: 0xF0, G: 0x80, B: 0x7F, A: 255}))
 	}))
@@ -65,12 +65,10 @@ func TestThemeColorFromServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 单色图的主色就是该色（量化允许 ±16 的桶内误差）
-	if !strings.HasPrefix(got, "#") || len(got) != 7 {
-		t.Fatalf("格式应为 #rrggbb：%q", got)
-	}
-	if !strings.Contains(got, "f") && !strings.Contains(got, "e") {
-		t.Logf("主色 %s（量化后与原色有桶内偏差，允许）", got)
+	// 单色图：所有像素进同一桶，平均色 normalize_for_card 后是确定值。
+	// #ef859d: l≈0.73>0.58→0.58, s≈0.77>0.75→0.75 → #e44544（手算常量，防回归；取色与旧后端逐头像对比见 P4_DONE）
+	if got != "#e44544" {
+		t.Errorf("单色图取色（含 normalize_for_card）= %q，应为 #e44544（手算常量，防回归）", got)
 	}
 }
 
@@ -83,11 +81,22 @@ func TestThemeColorUnreachable(t *testing.T) {
 	}
 }
 
-func TestDominantColorTransparentFallback(t *testing.T) {
-	// 全透明图：返回中性灰，前端取色不至于崩
+// 全透明图：按旧算法全部像素 a<128 被跳过、n=0 → 返回空串
+// （旧 getThemeColor 会回 200 + data:""，前端落到默认色，不会崩）。
+func TestThemeColorTransparentFallback(t *testing.T) {
 	img := image.NewNRGBA(image.Rect(0, 0, 10, 10))
-	if got := dominantColor(img); got != "#888888" {
-		t.Errorf("全透明应回 #888888：%q", got)
+	if got := extractThemeColor(boxResize64(img)); got != "" {
+		t.Errorf("全透明应回空串（旧行为），得到 %q", got)
+	}
+	// 半透明混合：a≥128 的像素参与平均（PIL getdata 非预乘口径）
+	img2 := image.NewNRGBA(image.Rect(0, 0, 8, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			img2.SetNRGBA(x, y, color.NRGBA{R: 0x20, G: 0x10, B: 0x10, A: 255})
+		}
+	}
+	if got := extractThemeColor(boxResize64(img2)); !strings.HasPrefix(got, "#") {
+		t.Errorf("普通图应产出 hex：%q", got)
 	}
 }
 
@@ -99,3 +108,6 @@ func allowPrivateThemeService() *ThemeService {
 	s.client = platform.NewSafeHTTPClient(true, 8*time.Second)
 	return s
 }
+
+// theme 服务只测「能脱离外网验证」的部分：URL 校验（SSRF）与分桶取色。
+// 真实抓图（对方站点 8s 时限等）由冒烟/生产只读验证覆盖。

@@ -158,8 +158,10 @@ func TestSpeakServiceFlow(t *testing.T) {
 		t.Fatalf("说说条数 = %d", len(page.Items))
 	}
 	when := page.Items[0].Time
-	if strings.Contains(page.Items[0].PlainContent, "**") {
-		t.Errorf("plainContent 应剥 Markdown：%q", page.Items[0].PlainContent)
+	// 说说的 plainContent 用旧 replace_and_remove_tags 口径：只剥 HTML 标签，
+	// Markdown 标记（**）原样保留——与文章的 CleanMarkdown 是两套口径
+	if page.Items[0].PlainContent != "**新**说说" {
+		t.Errorf("plainContent 应保留 Markdown 标记：%q", page.Items[0].PlainContent)
 	}
 	// 显式 time + 重复 time → validation.invalid_field
 	ts := int64(1750000000)

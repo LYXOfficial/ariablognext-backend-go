@@ -8,21 +8,21 @@ import (
 // 期望值全部写死成常量（testing.md §2.4）：不许用「再跑一遍同样正则」来验证自己。
 
 func TestWordCount(t *testing.T) {
+	// 期望值全部按旧后端公式手算：
+	// wordCount = len(\b\w+\b 匹配) + len(汉字匹配)，连续汉字会被双计
 	cases := []struct {
 		name string
 		in   string
 		want int
 	}{
 		{"空串", "", 0},
-		{"纯中文", "你好世界", 4},
-		{"纯英文单词", "hello world foo", 3},
-		{"中英混排", "用 Go 写了 3 个服务", 7}, // 用/Go/写/了/3/个/服/务 → 8？见下
-		{"标点不算", "你好，世界！", 4},
-		{"数字与英文都是词", "version 2.10 发布", 5},
-		{"英文大小写连续", "MongoDB Go", 2},
+		{"纯中文", "你好世界", 5},                 // 1 + 4
+		{"纯英文单词", "hello world foo", 3},    // 3 + 0
+		{"中英混排", "用 Go 写了 3 个服务", 11},      // 5 个 Unicode 词 + 6 汉字（双计口径）
+		{"标点切分后仍双计", "你好，世界！", 6},          // 2 词 + 4 汉字
+		{"数字与英文都是词", "version 2.10 发布", 6}, // 4 词 + 发布 2 字（双计）
+		{"英文大小写连续", "MongoDB Go", 2},       // 2 + 0
 	}
-	// 中英混排逐项校准：「用/写/了/个/服/务」6 个汉字 + Go + 3 = 8
-	cases[3].want = 8
 	for _, tc := range cases {
 		if got := WordCount(tc.in); got != tc.want {
 			t.Errorf("%s：WordCount(%q) = %d，应为 %d", tc.name, tc.in, got, tc.want)
@@ -204,5 +204,22 @@ func TestSearchContextEdges(t *testing.T) {
 	// 空文本 / 空关键词
 	if SearchContext("", "x", 5) != "" || SearchContext("abc", "", 5) != "" {
 		t.Error("空输入应返回空串")
+	}
+}
+
+// 说说 plainContent 口径（旧 replace_and_remove_tags）：<a>→[链接]、<img>→[图片]、
+// 其余标签删除——与文章的 CleanMarkdown 不同，不要混用。
+func TestSpeakPlainContent(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"<a href=\"https://x.example\">看看</a>", "[链接]"},
+		{"<img src=\"x.png\">", "[图片]"},
+		{"<b>粗体</b>文字", "粗体文字"},
+		{"纯文本不变", "纯文本不变"},
+		{"看看 <a href=\"https://x\">这个</a> 和 <img src=\"y.png\">", "看看 [链接] 和 [图片]"},
+	}
+	for _, c := range cases {
+		if got := SpeakPlainContent(c.in); got != c.want {
+			t.Errorf("SpeakPlainContent(%q) = %q，应为 %q", c.in, got, c.want)
+		}
 	}
 }

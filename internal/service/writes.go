@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/LYXOfficial/ariablognext-backend-go/internal/apperr"
@@ -62,11 +63,13 @@ func (s *PostService) UpdatePostContent(ctx context.Context, slug, markdown stri
 	if err != nil {
 		return nil, err
 	}
+	// 与旧后端一致：wordCount 作用于 markdown 原文；plainContent 剥 Markdown、
+	// 换行压成空格后截 201 字（updatePostMarkdown 的 .replace("\n", " ")[:201]）。
 	plain := textutil.CleanMarkdown(markdown)
-	wordCount := textutil.WordCount(plain)
+	wordCount := textutil.WordCount(markdown)
 	err = s.posts.UpdateContent(ctx, slug, model.PostContent{
 		Markdown:     markdown,
-		PlainContent: truncateRunes(plain, plainContentLimit),
+		PlainContent: truncateRunes(strings.ReplaceAll(plain, "\n", " "), plainContentLimit),
 		SearchText:   textutil.BuildSearchText(p.Title, markdown),
 		WordCount:    wordCount,
 	})
@@ -154,10 +157,10 @@ func (s *DraftService) UpdateDraftContent(ctx context.Context, slug, markdown st
 		return nil, err
 	}
 	plain := textutil.CleanMarkdown(markdown)
-	wordCount := textutil.WordCount(plain)
+	wordCount := textutil.WordCount(markdown)
 	if err := s.drafts.UpdateContent(ctx, slug, model.PostContent{
 		Markdown:     markdown,
-		PlainContent: truncateRunes(plain, plainContentLimit),
+		PlainContent: truncateRunes(strings.ReplaceAll(plain, "\n", " "), plainContentLimit),
 		SearchText:   textutil.BuildSearchText(d.Title, markdown),
 		WordCount:    wordCount,
 	}); err != nil {
@@ -190,7 +193,8 @@ func (s *SpeakService) CreateSpeak(ctx context.Context, content string, ts *int6
 	} else {
 		when = time.Now().Unix()
 	}
-	plain := textutil.CleanMarkdown(content)
+	// 说说的 plainContent 口径与文章不同：replace_and_remove_tags（<a>→[链接] 等）
+	plain := textutil.SpeakPlainContent(content)
 	if err := s.speaks.Create(ctx, model.Speak{
 		Time: when, Content: content, PlainContent: plain,
 	}); err != nil {
@@ -207,7 +211,7 @@ func (s *SpeakService) UpdateSpeak(ctx context.Context, when int64, content stri
 	if content == "" {
 		return apperr.New(apperr.ValidationMissingField, "缺少 content", fieldDetail("content", "必填"))
 	}
-	ok, err := s.speaks.Update(ctx, when, content, textutil.CleanMarkdown(content))
+	ok, err := s.speaks.Update(ctx, when, content, textutil.SpeakPlainContent(content))
 	if err != nil {
 		return err
 	}

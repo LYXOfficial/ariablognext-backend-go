@@ -246,3 +246,38 @@
   宁可无超时也不要凭空秒死；② 测试配置补上 `RequestTimeout`/`DBTimeout`。
 - **教训**：凡是 `context.WithTimeout(ctx, cfg.X)` 都该想一下 X 为零会怎样；
   「配置校验保证非零」不能替测试配置兜底。
+
+### 27. 行为不一致批量审计（2026-10-27 中午，用户要求「全部揪出来」）
+
+用生产真实数据把新旧后端逐接口对比，又挖出 4 个真实不一致，全部已修：
+
+1. **取色算法没有复刻旧版**（最严重）：我最初写的是「4bit RGB 分桶取最大桶」，
+   旧后端是「BOX 缩到 64×64 → 跳过透明/极浅/极深 → HSL（色相/16-明度×8）分桶、
+   彩度加权 1+s×3 → 取最重桶平均 → normalize_for_card」。实测 6/6 头像颜色全不同，
+   且出现 `#000000`/`#fdfdfd` 这种废色（卡片白字会看不清）。已逐行复刻
+   （`internal/service/theme.go`），复验 3/6 完全一致、3/6 仅 ±1~4 通道差
+   （BOX 缩放边界实现差异，用户确认可接受）。**教训：旧注释写「算法逐行对应」
+   就真的要逐行对照源码，不能凭「也是分桶取主色」就认为等价。**
+2. **webp 头像整个 415**：旧后端 PIL 支持 webp，友链头像里就有 webp；Go 标准库不支持。
+   加 `golang.org/x/image/webp` + `bmp`（decode-only side-effect import）。
+   ⚠️ 这是 TASKS 依赖清单之外的偏离，为行为一致必须加；如要撤销改回一行 import 即可。
+3. **图片转存信任 Content-Type**：旧后端用魔数嗅探（content-type 不可信，octet-stream 常见）。
+   已复刻 `SniffImageType`（png/jpeg/gif/webp 魔数，bmp 与旧转存一致被拒）。
+4. **wordCount / plainContent / 说说 plainContent 口径**：
+   - wordCount 作用于 **markdown 原文**（不是剥完的纯文本），公式 = `\b\w+\b` 次数 +
+     CJK 逐字次数（连续汉字双计是旧口径）；Python `\w` 是 Unicode-aware，Go 是
+     ASCII-only → 用 `[\p{L}\p{N}_]+` 精确复刻；
+   - 文章 plainContent：剥 Markdown → 换行压空格 → 截 201；
+   - 说说 plainContent：`replace_and_remove_tags`（<a>→[链接]、<img>→[图片]、
+     其余标签删除），**与文章是两套口径**，不要混用。
+
+### 28. 环境变量「未定义」不再启动失败（语义修订，2026-10-27 中午）
+
+- **原语义**：`{{ env.X }}` 引用了未定义变量 → 启动失败（说是「拼错名字的典型症状」）。
+  实际副作用：`EMBEDDING_API_KEY` 这类为未实现功能预留的占位符，逼着**每个环境**
+  （包括 Vercel）都必须定义一遍——哪怕是空的。用户明确不满。
+- **新语义**：未定义 → 按空字符串处理；「必填性」由 Validate 决定（必填缺失、
+  子系统 enabled=true 但密钥为空 → 仍然启动失败）。校验失败时错误里会附上
+  「未定义变量名单」，拼错名字照样查得出来。
+- 落点：`internal/config/config.go::resolveEnv`；回归测试
+  `TestUndefinedOptionalEnvBootsFine`。`.env.example` 里的键保留作文档。

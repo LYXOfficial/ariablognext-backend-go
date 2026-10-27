@@ -256,7 +256,7 @@ Vercel 的 Go 函数只带编译产物，运行时不一定有 `config.yml`。�
 | 类别 | 规则 | 违反时 |
 |---|---|---|
 | 必填 | `database.uri` / `database.name` / `auth.jwtSecret` / `site.url` / `site.name` | 启动失败 |
-| 占位符 | 引用了 `{{ env.X }}` 但 `X` **未定义** → 失败；`X` 定义为空值 → 允许（由 enabled 开关决定是否必须）| 启动失败 / 通过 |
+| 占位符 | 引用了 `{{ env.X }}` 但 `X` **未定义** → 按空处理（2026-10-27 语义修订：EMBEDDING_API_KEY 这类预留占位符不再逼着每个环境定义）；必填性由「必填校验 + enabled 开关」保证，校验失败时错误里列出全部未定义名 | 启动失败 / 通过 |
 | 依赖 | 某子系统 `enabled: true` 但它的密钥有空值 | 启动失败，报「media.enabled=true 但 S3_BUCKET 为空」|
 | 互斥 | `features.semanticSearch=true` 但 `ai.embedding.enabled=false` | 启动失败 |
 | 未知 | 出现 `Config` 里没有的字段 | 启动失败（`KnownFields`）|
