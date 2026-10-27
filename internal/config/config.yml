@@ -54,7 +54,9 @@ server:
 
 list:
   defaultPageSize: 16
-  maxPageSize: 100
+  # 200 而不是 100：旧 postsInfo「endl 缺省 = 返回到结尾」靠 glue 用这个值兜底
+  # 翻译，给文章数留余量，别让兜底变成静默截断（83 篇已逼近旧值 100）
+  maxPageSize: 200
   # pageSize=full 的硬上限：超过就报 validation.invalid_field，避免一次拉爆
   maxFullItems: 300
 

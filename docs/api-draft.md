@@ -104,7 +104,7 @@
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `page` | int | 1 | 从 1 开始 |
-| `pageSize` | int \| `full` | 16 | 1–100；`full` 表示不分页、一次返回全部 |
+| `pageSize` | int \| `full` | 16 | 1–200；`full` 表示不分页、一次返回全部 |
 | `countOnly` | bool | false | 只要数量，不要列表——**省流量模式** |
 
 三种响应形态：
@@ -280,7 +280,7 @@ Link      { id, name, url, avatar, description, color, latency }
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `page` | int | 1 | |
-| `pageSize` | int \| `full` | 16 | 1–100，或 `full` |
+| `pageSize` | int \| `full` | 16 | 1–200，或 `full` |
 | `countOnly` | bool | false | 只要数量 |
 | `category` | string | – | 精确匹配 |
 | `tag` | string | – | `tags` 数组包含 |
