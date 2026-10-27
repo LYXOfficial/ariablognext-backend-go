@@ -191,6 +191,30 @@ go 侧已按用户要求进入守候状态：发现问题就修，修完在 P4_D
 
 ---
 
+## 九、本地全栈实况（2026-10-27 11:42 起，用户指示「库指向线上，直接上云」）
+
+用户明确指示本地后端**直连线上 Atlas（AriaBlogNext 库、可写）**，作为直接上云前的真实演练。
+当前在跑的四个进程：
+
+| 端口 | 服务 | 说明 |
+|---|---|---|
+| 2333 | backend-go | `ENV_FILE=.env.production`（内嵌 config.yml，四子系统全开，readOnly=false），连线上 Atlas |
+| 2334 | glue | `/tmp/glue-live`（新鲜构建），UPSTREAM=http://127.0.0.1:2333 |
+| 3000 | 博客前端 | `pnpm dev`，`src/config.tsx` backEndUrl → http://127.0.0.1:2334（工作区改动，未提交） |
+| 3001 | 管理面板 | `pnpm dev`，`src/dashboardConfig.ts` backEndUrl → http://127.0.0.1:2334（同上） |
+
+验证结果：
+- 博客首页 SSR 渲染**线上真实数据**：83 篇文章（分页 6 页）、17 个分类、79 个标签、
+  说说（最新 1 天前）、最新评论（twikoo 生产服务）、公告、统计（22.45w 字）；
+- 经 glue 的旧契约链路全通：postCount/postsInfo/totalWordCount/tags/flinks/speaksCount/
+  lastUpdateTime/themeColor（真实 jpg 头像取色成功，webp 按契约拒绝）；
+- 面板登录页正常；未登录时 draft 接口 401（预期）；
+- glue CORS 预检通过（`Access-Control-Allow-Origin` 等）。
+
+⚠️ **注意**：此模式下面板/后端的**所有写操作都直接作用于线上库**（审批、删文、改配置都是真的）；
+`ensureIndexes` 已在线上库幂等建好 7 个索引。邮件/GitHub dispatch/R2 上传也都是真实副作用。
+此前「生产库只读」的铁律自本条起按用户指示解除（仅限本地这套全权限实例）。
+
 ## 八、sync 信箱（glue ↔ go 唯一通信通道）
 
 工作区根目录 `sync/`（协议见 `sync/README.md`）。go 侧强制检查点：每次开始干活前、
