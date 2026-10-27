@@ -5,7 +5,7 @@
 AriaBlogNext 博客后端的 Go 重写版：**Fiber v3 + MongoDB**，部署在 **Vercel**。
 
 > ✅ **当前状态：P0–P4 全部实现并验收通过。**
-> 55 条路由、统一信封、仓储抽象、鉴权/限流/体积限制、图床/邮件/GitHub/LLM 平台层、
+> 56 条路由、统一信封、仓储抽象、鉴权/限流/体积限制、图床/邮件/GitHub/LLM 平台层、
 > 友链申请全流程、导出/sitemap/语义搜索 stub 均已完成；前端仍走旧后端，由
 > `ariablognext-backend-glue` 做兼容翻译，切流清单见 `sync/inbox/U-001`（工作区根目录）。
 >
@@ -19,7 +19,7 @@ AriaBlogNext 博客后端的 Go 重写版：**Fiber v3 + MongoDB**，部署在 *
 
 | | 现在（Python / FastAPI） | 这个仓库（Go / Fiber） |
 |---|---|---|
-| 路由 | 72 条，`/get/*` `/update/*` 动词前缀 | 55 条，`/资源/细分` + query |
+| 路由 | 72 条，`/get/*` `/update/*` 动词前缀 | 56 条，`/资源/细分` + query |
 | 响应 | `{message, data}` / `{detail:{...}}` 各自为政 | 统一信封 `{ok, requestId, data, meta | error}` |
 | 数据层 | 直接 `motor` 到处查 | 仓储接口 + 可替换适配器（`DB_TYPE`）|
 | 配置 | 散落的 `os.environ.get` | 单一 `config.yml` + `{{ env.X }}` 占位符 |
@@ -110,7 +110,8 @@ python3 tests/compare.py      # 与线上旧后端逐字段对比
 | 文件 | 内容 |
 |---|---|
 | [`TASKS.md`](TASKS.md) | 施工清单（按阶段，带验收命令）|
-| [`docs/api-draft.md`](docs/api-draft.md) | 接口契约：55 条路由、参数、返回、错误码 |
+| [`docs/api-draft.md`](docs/api-draft.md) | 接口契约：56 条路由、参数、返回、错误码 |
+| [`docs/api-v1.md`](docs/api-v1.md) | **v1.0 正式 API 文档**：对外承诺的路径/参数/错误码/注意事项 |
 | [`docs/store-interfaces.md`](docs/store-interfaces.md) | 存储层接口定义 |
 | [`docs/design-notes.md`](docs/design-notes.md) | 设计取舍：信封硬约束、数据抽象层、配置、时区、并发 |
 | [`docs/testing.md`](docs/testing.md) | 测试方案：四层测试与具体用例 |

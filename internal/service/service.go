@@ -25,6 +25,7 @@ type Set struct {
 	Links        *LinkService
 	Login        *LoginService
 	Applications *ApplicationService
+	Status       *StatusService
 }
 
 // NewSet 组装全部服务。deps 全部显式传入。
@@ -46,6 +47,7 @@ func NewSet(cfg *config.Config, st store.Store) *Set {
 			mailer:    platform.NewMailer(cfg.Mail),
 		},
 		Applications: NewApplicationService(cfg, st),
+		Status:       NewStatusService(cfg, st),
 		Login:        nil, // main 里在 app.New 之后补（需要 JWT 签发器）
 	}
 }

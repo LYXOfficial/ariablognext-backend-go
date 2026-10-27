@@ -209,7 +209,7 @@ Link      { id, name, url, avatar, description, color, latency }
 
 ---
 
-## 2. 接口总表（55 条，旧 72 条）
+## 2. 接口总表（56 条，旧 72 条）
 
 | # | 方法 | 路径 | 鉴权 | 替代的旧接口 |
 |---|---|---|---|---|
@@ -267,6 +267,7 @@ Link      { id, name, url, avatar, description, color, latency }
 | 52 | GET | `/auth/verify` | 后台 | /access/user/verify |
 | 53 | GET | `/sitemap` | 公开 | sitemapGen |
 | 54 | GET | `/health` | 公开 | （新增）|
+| 55 | GET | `/status` | 公开 | （新增，2026-10-27）状态页：版本/技术栈/依赖可达性，统一信封 200 |
 | 55 | POST | `/maintenance/export` | 内部 | get/export/collections |
 
 ---

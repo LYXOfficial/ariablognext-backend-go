@@ -14,6 +14,7 @@ func Register(a *app.App, cfg *config.Config, st store.Store, svc *service.Set, 
 	routes := []app.Route{
 		// 骨架
 		{Method: "GET", Path: "/health", Auth: app.Public, Handler: health(st)},
+		{Method: "GET", Path: "/status", Auth: app.Public, Handler: status(cfg, svc, func() int { return len(a.Routes()) })},
 		// posts（读）
 		{Method: "GET", Path: "/posts/list", Auth: app.Public, Handler: postsList(cfg, svc)},
 		{Method: "GET", Path: "/posts/detail", Auth: app.Public, Handler: postsDetail(svc)},

@@ -88,7 +88,7 @@ func (a *App) JWT() *auth.JWT { return a.jwt }
 // Store 暴露存储（handler 注册时取仓储）。
 func (a *App) Store() store.Store { return a.st }
 
-// Routes 返回路由表快照（测试断言 55 条路由全注册）。
+// Routes 返回路由表快照（测试断言 56 条路由全注册）。
 func (a *App) Routes() []Route {
 	out := make([]Route, len(a.routes))
 	copy(out, a.routes)
