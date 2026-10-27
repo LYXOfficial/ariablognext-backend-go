@@ -1,9 +1,14 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"strings"
 
 	"github.com/LYXOfficial/ariablognext-backend-go/internal/apperr"
 	"github.com/LYXOfficial/ariablognext-backend-go/internal/store"
@@ -61,6 +66,12 @@ func (a *App) Render(c *Ctx, data any, err error) error {
 	// Raw 响应：跳过信封，直接写字节（sitemap XML）
 	if raw, ok := data.(Raw); ok {
 		c.req.Set(fiber.HeaderContentType, raw.ContentType)
+		if etag := etagOf(raw.Body); etag != "" {
+			c.req.Set(fiber.HeaderETag, etag)
+			if notModified(c.req, etag) {
+				return writeNotModified(c.req, etag)
+			}
+		}
 		return c.req.Status(fiber.StatusOK).Send(raw.Body)
 	}
 	status := fiber.StatusOK
@@ -102,7 +113,74 @@ func (a *App) Render(c *Ctx, data any, err error) error {
 	} else {
 		body.Data = data
 	}
+
+	// GET 200 的协商缓存：ETag 每次请求现算（内容一变就变，绝不返回过期数据），
+	// 未变化时回 304 零载荷——后台反复刷新全量列表的场景免掉整段传输。
+	// Cache-Control: no-cache 让浏览器「存储但每次都来验证」：既是实时的，
+	// 又能在验证通过时拿到 304。handler 已自带 Cache-Control 的（theme-color
+	// 的 max-age=86400 是旧契约值）不覆盖。
+	if c.Method() == http.MethodGet && status == fiber.StatusOK {
+		if len(c.req.Response().Header.PeekAll(fiber.HeaderCacheControl)) == 0 {
+			c.req.Set(fiber.HeaderCacheControl, "no-cache")
+		}
+		// ETag 只对「内容」负责：requestId 每个请求都不同，绝不能参与哈希，
+		// 否则同一份数据永远 match 不上，协商缓存失效
+		etagSrc, err := json.Marshal(struct {
+			Data any
+			Meta Meta
+		}{Data: body.Data, Meta: body.Meta})
+		if err == nil {
+			if etag := etagOf(etagSrc); etag != "" {
+				c.req.Set(fiber.HeaderETag, etag)
+				if notModified(c.req, etag) {
+					return writeNotModified(c.req, etag)
+				}
+			}
+			return c.req.Status(status).Type("json", "utf-8").Send(mustJSON(body))
+		}
+	}
 	return c.req.Status(status).JSON(body)
+}
+
+// mustJSON 序列化信封；失败时退回 nil（外层已保证 err 路径另有出口，
+// 这里理论上不可达——successBody 不含无法编码的类型）。
+func mustJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return []byte("{}")
+	}
+	return b
+}
+
+// etagOf 对最终响应字节算强 ETag（sha256 截断；1.2MB 的全量响应也就几毫秒）。
+func etagOf(body []byte) string {
+	sum := sha256.Sum256(body)
+	return `"` + hex.EncodeToString(sum[:8]) + `"`
+}
+
+// notModified 判断请求端的 If-None-Match 是否与当前 ETag 匹配。
+// 按 RFC 7232 处理逗号分隔列表与 W/ 前缀（浏览器可能带弱化前缀回传）。
+func notModified(fc fiber.Ctx, etag string) bool {
+	inm := fc.Get(fiber.HeaderIfNoneMatch)
+	if inm == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(inm, ",") {
+		candidate = strings.TrimSpace(candidate)
+		candidate = strings.TrimPrefix(candidate, "W/")
+		if candidate == etag || candidate == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// writeNotModified 写 304：必须无 body，ETag 照带（浏览器据此更新缓存条目）。
+func writeNotModified(fc fiber.Ctx, etag string) error {
+	fc.Request().Header.Del(fiber.HeaderContentType)
+	fc.Set(fiber.HeaderETag, etag)
+	_ = fc.Status(fiber.StatusNotModified)
+	return nil
 }
 
 // writeError 写失败信封。fiber 错误处理器（404 等无 handler 场景）也复用它。
