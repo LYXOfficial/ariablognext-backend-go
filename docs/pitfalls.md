@@ -309,3 +309,22 @@
    （预过滤是匹配域超集）。无命中关键词的耗时从 ~1100ms 降到 ≈ 纯计数基线。
 4. 集成测试曾静默跳过（环境变量没生效时 TestMain os.Exit(0)，包级仍显示 ok）——
    **看包级 ok 不算数，要确认测试真的跑了**（-v 看 RUN 行）。
+
+### 31. 实时性约束下的性能大招：ETag/304 协商缓存（不是 TTL 缓存）
+
+- **约束**：用户明确「缓存不能牺牲实时性」——任何 s-maxage TTL 都出局（发布后 30s
+  陈旧窗口不可接受）。
+- **方案**：GET 200 响应算强 ETag（sha256，只对 Data+Meta 哈希），`Cache-Control:
+  no-cache`（浏览器存储但每次验证）。重复请求带 If-None-Match → 数据没变回 304
+  **零载荷**，变了回全新 200。**实时性 100%**：指纹每次现算，写完立刻反映。
+- **实测**（经代理，含 ~500ms 固定 RTT）：后台全量 83 篇带正文（1.2MB）
+  200 重装 2138ms → 304 重放 **785ms = 旧后端同场景的 0.40x**。
+- **实现要点（都是踩出来的）**：
+  1. ETag 绝不能把 requestId 算进去（每请求不同 → 永远不匹配）；
+  2. 判断 handler 自带 Cache-Control 时查的是**响应**头不是请求头；
+  3. glue 必须转发 If-None-Match（config 白名单 + forwardHeaders）且透传 304
+     （无 body 是协议要求，有 body 反而违规）；上游 ETag/CC 在 GET 200 递给客户端，
+     否则客户端没有指纹、协商永远不成立；
+  4. 304 只发给主动带 If-None-Match 的客户端——爬虫/监控/不带该头的脚本永远 200，零影响。
+- 测试：`TestRenderETagNotModified`（后端）、`TestSearchPostsNotModifiedPassthrough`、
+  `TestSearchPostsForwardsETag`（glue）。
