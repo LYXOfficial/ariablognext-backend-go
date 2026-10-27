@@ -245,6 +245,10 @@ func (r *postRepo) Page(ctx context.Context, f store.PostFilter, loc *time.Locat
 			}
 			items = append(items, p)
 		}
+	} else {
+		if err := cursor.All(ctx, &items); err != nil {
+			return store.Page[model.Post]{}, wrapMongo(err)
+		}
 	}
 	if items == nil {
 		items = []model.Post{}
