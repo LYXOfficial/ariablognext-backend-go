@@ -266,7 +266,9 @@ func (r *postRepo) Page(ctx context.Context, f store.PostFilter, loc *time.Locat
 }
 
 // pageFullText 是「库里没有 searchText」时的全文检索实现：
-//  1. 只应用非关键词过滤（分类/标签/年月），全量取出候选（83 篇 ≈ 700KB，与旧后端等价）；
+//  1. 先用第一个关键词在服务端预过滤（title/mdContent，大小写不敏感，QuoteMeta 字面匹配），
+//     把候选集从「全部文章」缩到「粗命中」（几十 KB 而不是 700KB）——预过滤是匹配域的
+//     超集（原始 mdContent ⊇ 清洗后文本），Go 侧仍会逐篇完整过滤，正确性不受影响；
 //  2. 在 Go 里还原每篇的可检索文本：优先用已有 searchText，没有就用 title+mdContent 现算
 //     （现算会剥掉 Markdown 与外挂标签，所以搜 "fold" 不会命中 <Folding> 这类结构）；
 //  3. 多关键词 AND、titleOnly、排序、分页、context 片段全部在 Go 里完成。
@@ -278,6 +280,19 @@ func (r *postRepo) pageFullText(ctx context.Context, f store.PostFilter, loc *ti
 	q, err := buildPostQuery(noKeyword, loc)
 	if err != nil {
 		return store.Page[model.Post]{}, err
+	}
+
+	// 服务端预过滤：第一个关键词命中 title 或 mdContent 的才进候选集。
+	// Go 侧匹配域是 title+清洗后正文，原始 mdContent ⊇ 清洗后正文，
+	// 所以这里是超集过滤——多命中的候选会被下面的完整过滤拒绝，不会漏也不会错。
+	// （大小写不敏感与 Go 侧 ToLower 对齐；QuoteMeta 保持字面匹配语义。）
+	if len(kws) > 0 {
+		re := bson.Regex{Pattern: regexp.QuoteMeta(kws[0]), Options: "i"}
+		if f.TitleOnly {
+			q["title"] = re
+		} else {
+			q["$or"] = bson.A{bson.M{"title": re}, bson.M{"mdContent": re}}
+		}
 	}
 
 	cursor, err := r.coll.Find(ctx, q, options.Find().SetProjection(bson.M{
@@ -503,8 +518,11 @@ func (r *postRepo) Create(ctx context.Context, p model.Post) error {
 		"publishTime": p.PublishTime, "lastUpdatedTime": p.LastUpdatedTime,
 		"wordCount":    nullableInt(p.WordCount),
 		"plainContent": p.PlainContent, "mdContent": p.MdContent,
-		// searchText 为空串时不写该字段（omitempty），让存量/无索引文档走 fallback 查询
-		"searchText": p.SearchText,
+	}
+	// searchText 为空串时不写该字段——bson.M 不吃 omitempty，必须手动判断；
+	// 空字段会让 $exists:false 的 fallback 判定失效，全文搜索直接漏结果
+	if p.SearchText != "" {
+		doc["searchText"] = p.SearchText
 	}
 	if _, err := r.coll.InsertOne(ctx, doc); err != nil {
 		// 重复 slug = unique index 拦截，转成哨兵；绝不先 Count 再 Insert（竞态）

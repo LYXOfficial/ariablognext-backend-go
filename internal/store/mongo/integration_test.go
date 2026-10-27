@@ -424,3 +424,100 @@ func itoaI(n int) string {
 	}
 	return string(buf)
 }
+
+// ---- 文章：全文搜索（预过滤超集 + Go 完整过滤）----
+
+func TestIntegrationPostSearchPrefilter(t *testing.T) {
+	ctx := context.Background()
+	base := int64(1760000000)
+	seedPost(t, model.Post{Slug: "s-body", Title: "标题甲", PublishTime: base,
+		MdContent: "这篇讲的是数据库索引优化的文章", PlainContent: "这篇讲的是数据库索引优化的文章"})
+	seedPost(t, model.Post{Slug: "s-both", Title: "索引与缓存", PublishTime: base + 1,
+		MdContent: "索引设计 review 与缓存策略", PlainContent: "索引设计 review 与缓存策略"})
+	seedPost(t, model.Post{Slug: "s-markup", Title: "外挂标签", PublishTime: base + 2,
+		MdContent: "<Folding>fold</Folding> 正文与索引无关", PlainContent: " 正文与索引无关"})
+	seedPost(t, model.Post{Slug: "s-title-only", Title: "索引专题", PublishTime: base + 3,
+		MdContent: "内容完全不含关键词", PlainContent: "内容完全不含关键词"})
+	seedPost(t, model.Post{Slug: "s-case", Title: "大小写", PublishTime: base + 4,
+		MdContent: "use GOLANG pipelines", PlainContent: "use GOLANG pipelines"})
+	// 新式文档（写入时带 searchText，走主查询快路径而非 pageFullText）
+	seedPost(t, model.Post{Slug: "s-new", Title: "新式文档", PublishTime: base + 5,
+		MdContent: "正文提到数据库性能", PlainContent: "正文提到数据库性能",
+		SearchText: "新式文档 正文提到数据库性能"})
+	defer func() {
+		for _, s := range []string{"s-body", "s-both", "s-markup", "s-title-only", "s-case", "s-new"} {
+			_, _ = testStore.Posts().Delete(ctx, s)
+		}
+	}()
+
+	slugs := func(f store.PostFilter) []string {
+		t.Helper()
+		page, err := testStore.Posts().Page(ctx, f, testLoc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := []string{}
+		for _, p := range page.Items {
+			out = append(out, p.Slug)
+		}
+		return out
+	}
+	contains := func(list []string, want string) bool {
+		for _, s := range list {
+			if s == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 1. 单关键词命中正文：存量(s-body，走预过滤路径) + 新式(s-new，走快路径)
+	got := slugs(store.PostFilter{Keyword: "数据库", Page: 1, PageSize: 10})
+	if len(got) != 2 || !contains(got, "s-body") || !contains(got, "s-new") {
+		t.Errorf("「数据库」应命中 s-body+s-new，得到 %v", got)
+	}
+	// 2. 多关键词 AND：两个词都在同一篇
+	got = slugs(store.PostFilter{Keyword: "索引 缓存", Page: 1, PageSize: 10})
+	if len(got) != 1 || got[0] != "s-both" {
+		t.Errorf("「索引 缓存」AND 应只命中 s-both，得到 %v", got)
+	}
+	// 3. 关键词在 title、不在正文（预过滤 $or 的 title 分支）
+	got = slugs(store.PostFilter{Keyword: "专题", Page: 1, PageSize: 10})
+	if len(got) != 1 || got[0] != "s-title-only" {
+		t.Errorf("「专题」应命中 s-title-only，得到 %v", got)
+	}
+	// 4a. 标签内容词命中：fold 是正文内容，应该命中（预过滤超集 → Go 确认）
+	got = slugs(store.PostFilter{Keyword: "fold", Page: 1, PageSize: 10})
+	if len(got) != 1 || got[0] != "s-markup" {
+		t.Errorf("「fold」应命中 s-markup（标签内容是正文），得到 %v", got)
+	}
+	// 4b. 标签名不命中：Folding 是结构不是内容（这正是与旧后端的行为差异：旧搜原始
+	//     mdContent 会把所有用 <Folding> 的文章都翻出来）
+	got = slugs(store.PostFilter{Keyword: "Folding", Page: 1, PageSize: 10})
+	if len(got) != 0 {
+		t.Errorf("「Folding」（标签名）不应命中，得到 %v", got)
+	}
+	// 5. 大小写不敏感
+	got = slugs(store.PostFilter{Keyword: "golang", Page: 1, PageSize: 10})
+	if !contains(got, "s-case") {
+		t.Errorf("「golang」应命中 s-case（大小写不敏感），得到 %v", got)
+	}
+	// 5.5 带 searchText 的文档走快路径也能命中
+	got = slugs(store.PostFilter{Keyword: "数据库", Page: 1, PageSize: 10})
+	if !contains(got, "s-body") || !contains(got, "s-new") {
+		t.Errorf("「数据库」应命中存量(s-body)与新式(s-new)两种文档，得到 %v", got)
+	}
+	// 6. titleOnly：只搜标题
+	got = slugs(store.PostFilter{Keyword: "索引", TitleOnly: true, Page: 1, PageSize: 10})
+	if len(got) != 2 || !contains(got, "s-both") || !contains(got, "s-title-only") {
+		t.Errorf("titleOnly「索引」应命中 s-both/s-title-only，得到 %v", got)
+	}
+	// 7. CountOnly 与条数一致
+	page, err := testStore.Posts().Page(ctx, store.PostFilter{Keyword: "索引", Page: 1, PageSize: 10}, testLoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Count != int64(len(page.Items)) {
+		t.Errorf("count=%d 与条数 %d 不一致", page.Count, len(page.Items))
+	}
+}
