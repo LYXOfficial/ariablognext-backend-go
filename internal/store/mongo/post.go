@@ -47,6 +47,22 @@ func postProjectionFor(f store.PostFilter) bson.M {
 // contextRadius 是契约写死的 context 片段半径（api-draft §3.1.1：前后各 50 字）。
 const contextRadius = 50
 
+// truncateListPlain 把列表场景的 plainContent 截到契约长度（201 字符）。
+// 只在列表/搜索路径调用：详情接口返回全文（与旧后端一致）。
+// 必须在读路径截——存量文章的 plainContent 没截过（实测最大 5.6KB），
+// 16 篇列表会带回 ~60KB 无用流量，是旧后端响应的 5 倍大。
+func truncateListPlain(p *model.Post) {
+	if len(p.PlainContent) > plainContentReadLimit {
+		runes := []rune(p.PlainContent)
+		if len(runes) > plainContentReadLimit {
+			p.PlainContent = string(runes[:plainContentReadLimit])
+		}
+	}
+}
+
+// plainContentReadLimit 与 service 层写入时的 plainContentLimit 同源（201 字符）。
+const plainContentReadLimit = 201
+
 // postRow 是「搜索模式」的扫描载体：Post 全字段 + searchText。
 // 单独存在的原因：searchText 是查询基建字段，不能泄漏进对外模型。
 type postRow struct {
@@ -229,16 +245,13 @@ func (r *postRepo) Page(ctx context.Context, f store.PostFilter, loc *time.Locat
 			}
 			items = append(items, p)
 		}
-	} else {
-		if err := cursor.All(ctx, &items); err != nil {
-			return store.Page[model.Post]{}, wrapMongo(err)
-		}
 	}
 	if items == nil {
 		items = []model.Post{}
 	}
 	for i := range items {
 		items[i].Normalize()
+		truncateListPlain(&items[i])
 	}
 
 	page := store.Page[model.Post]{Items: items, Count: count}
@@ -343,6 +356,7 @@ func (r *postRepo) pageFullText(ctx context.Context, f store.PostFilter, loc *ti
 		if !f.WithContent {
 			p.MdContent = ""
 		}
+		truncateListPlain(&p)
 		items = append(items, p)
 	}
 	page := store.Page[model.Post]{Items: items, Count: count}

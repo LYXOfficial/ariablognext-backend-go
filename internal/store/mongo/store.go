@@ -6,10 +6,12 @@ package mongo
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/LYXOfficial/ariablognext-backend-go/internal/config"
 	"github.com/LYXOfficial/ariablognext-backend-go/internal/store"
+	"go.mongodb.org/mongo-driver/v2/event"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
@@ -37,7 +39,20 @@ func open(ctx context.Context, cfg *config.Config) (*Store, error) {
 		SetMaxConnIdleTime(cfg.Database.Pool.IdleTimeout.Std()).
 		// ObjectID 一律解码成 24 位 hex 字符串：接口层的 ID 是 string（store-interfaces §0），
 		// 没有这个选项，解 _id 到 model.LinkApplication.ID 会直接报错。
-		SetBSONOptions(&options.BSONOptions{ObjectIDAsHexString: true})
+		SetBSONOptions(&options.BSONOptions{ObjectIDAsHexString: true}).
+		// 慢查询日志：>300ms 的命令打 WARN（本地调试/生产排障两用；
+		// 正常单查询在 Vercel iad1→Atlas 上是两位数 ms，300ms 起就算异常）
+		SetMonitor(&event.CommandMonitor{
+			Succeeded: func(ctx context.Context, e *event.CommandSucceededEvent) {
+				if e.Duration >= 300*time.Millisecond {
+					slog.Warn("mongo 慢命令", "op", e.CommandName,
+						"collection", e.RequestID, "耗时", e.Duration.String())
+				}
+			},
+			Failed: func(ctx context.Context, e *event.CommandFailedEvent) {
+				slog.Warn("mongo 命令失败", "op", e.CommandName, "耗时", e.Duration.String())
+			},
+		})
 
 	// ⚠️ mongo-driver v2 的 Connect 不接收 ctx：连接是惰性的，
 	// 真正等连接的是下面的 Ping（拿调用方的 ctx 做超时控制）。
