@@ -281,3 +281,31 @@
   「未定义变量名单」，拼错名字照样查得出来。
 - 落点：`internal/config/config.go::resolveEnv`；回归测试
   `TestUndefinedOptionalEnvBootsFine`。`.env.example` 里的键保留作文档。
+
+### 29. Vercel 函数区域决定 MongoDB 性能（2026-10-27 下午，切流前最重要的一次修复）
+
+- **现象**：新后端全面比旧后端慢 1.2~2.5 倍（列表 1.8x、导航 2.5x），但本地连同一个
+  Atlas 却只有部分端点慢。反复测下来发现：新后端 404（不碰 DB）501ms、/health 788ms
+  → **单次 Atlas ping ≈ 287ms**；旧后端同方法测出 ≈ 0ms。
+- **根因**：`x-vercel-id: sfo1::hkg1` vs `sfo1::iad1`——旧后端函数在香港（贴着 Atlas），
+  新后端（Vercel Go 项目默认区域）在美东 iad1，每条 Mongo 命令跨太平洋。
+  「多查询端点慢得格外多」= 每多一条命令多一次跨洋往返。
+- **修法**：两个 Vercel 项目（backend-go、glue）函数区域都改到 hkg1
+  （vercel.json `"regions": ["hkg1"]` 在 Hobby 计划下直接生效；也可 Dashboard 改）。
+- **效果**：直联合计 1.45x → 0.97x；glue 链路合计 1.09x → 0.99x。
+- **教训**：Serverless + 托管数据库，第一件事就是把函数放数据库隔壁。
+  排查手段：拿一个不碰 DB 的 404 当基线，/health 减它就是 DB 往返成本。
+
+### 30. 新后端搜索响应比旧后端大 3.4 倍 / 列表大 5 倍（切流前的两个体积坑）
+
+1. **列表/搜索 plainContent 没截**：契约 201 字符只在写入时保证，存量文章最大 5.6KB。
+   读取路径必须再截（`truncateListPlain`，仅列表/搜索；详情保持全文与旧一致）。
+   修复前列表响应 80KB vs 旧 15KB。
+2. **glue searchPosts 照单直传**：新契约搜索项带 plainContent/description 等完整字段，
+   33 条命中 34KB vs 旧 10KB。glue 裁剪回旧契约四字段（slug/title/publishTime/context）。
+   golden 夹具同步更新（合成夹具缺字段时不能输出 null——存在才输出）。
+3. 顺带：搜索加**服务端首关键词预过滤**（title/mdContent，QuoteMeta+忽略大小写），
+   候选集从全量 83 篇（~700KB）缩到粗命中；Go 侧仍逐篇完整过滤，正确性不变
+   （预过滤是匹配域超集）。无命中关键词的耗时从 ~1100ms 降到 ≈ 纯计数基线。
+4. 集成测试曾静默跳过（环境变量没生效时 TestMain os.Exit(0)，包级仍显示 ok）——
+   **看包级 ok 不算数，要确认测试真的跑了**（-v 看 RUN 行）。
