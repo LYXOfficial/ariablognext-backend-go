@@ -171,10 +171,16 @@ ai:
     timeout: 60s
     # 同一篇的缓存冷却，避免被反复触发（旧后端 10 分钟）
     cooldown: 10m
+    # 原样合并进 chat/completions 请求体的参数（覆盖代码默认值）。
+    # enable_thinking=false 是必须的：Qwen3 默认先输出一大段思考过程，
+    # 实测同一句话 23s → 3s；长文分块摘要在 90s 路由超时内跑不完就会
+    # 让 dashboard 的「重新生成」报上游失败（2026-10-28 线上故障）。
+    extraBody:
+      enable_thinking: false
 
   embedding:
     # 语义搜索（SiliconFlow bge-m3，有免费额度）。启用三步：
-    # ① .env 配 SF_TOKEN（复用摘要的 SiliconFlow key）② features.semanticSearch 改 true ③ go run ./cmd/build-embeddings 回填
+    # ① .env 配 SF_TOKEN（复用摘要的 SiliconFlow key）② features.semanticSearch 改 true ③ python3 scripts/build_embeddings.py 回填
     # 未启用时 /posts/semantic 自动回退关键词搜索，调用方无感
     enabled: true
     provider: siliconflow
@@ -183,7 +189,7 @@ ai:
     dim: 1024
     # 余弦阈值：低于它不进结果。实测校准（2026-10-28，83 篇）：真相关 0.53-0.67，
     # 无关/硬匹 0.36-0.51（如「演唱会门票」0.508 命中公交换乘题）→ 0.52 恰好分开
-    minScore: 0.52
+    minScore: 0.46
     timeout: 15s
     apiKey: "{{ env.SF_TOKEN }}"
 features:

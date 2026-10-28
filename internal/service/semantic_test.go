@@ -76,7 +76,7 @@ func TestSemanticHybridOrder(t *testing.T) {
 		Chunks: []store.EmbeddingChunk{{Idx: 0, Text: "fiber 框架介绍", Vector: []float32{1, 0, 0, 0}}},
 	})
 
-	res, err := svc.Search(context.Background(), "框架")
+	res, _, err := svc.Search(context.Background(), "框架")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestSemanticThresholdBlocksForcedMatch(t *testing.T) {
 		Chunks: []store.EmbeddingChunk{{Idx: 0, Text: "fiber 框架介绍", Vector: []float32{1, 0, 0, 0}}},
 	})
 
-	res, err := svc.Search(context.Background(), "红烧肉怎么做")
+	res, _, err := svc.Search(context.Background(), "红烧肉怎么做")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestSemanticFallbackWhenDisabled(t *testing.T) {
 	svc, st := semanticTestService(t, cfg, &fakeEmbedder{enabled: true})
 	seedSemPosts(st)
 
-	res, err := svc.Search(context.Background(), "fiber")
+	res, _, err := svc.Search(context.Background(), "fiber")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,11 +139,43 @@ func TestSemanticDegradeOnError(t *testing.T) {
 	svc, st := semanticTestService(t, cfg, &fakeEmbedder{enabled: true, fail: true})
 	seedSemPosts(st)
 
-	res, err := svc.Search(context.Background(), "Go")
+	res, _, err := svc.Search(context.Background(), "Go")
 	if err != nil {
 		t.Fatalf("失败应降级而不是报错：%v", err)
 	}
 	if len(res) != 1 || res[0].Slug != "go" {
 		t.Errorf("降级后应有关键词结果：%+v", res)
+	}
+}
+
+// 引擎标识必须能区分三种状态：hybrid（真语义）、keyword（开关关）、
+// keyword-fallback（开着但向量/嵌入出错）。2026-10-28 线上静默降级过，
+// 当时就是因为没有这个信号，误以为语义在跑。
+func TestSemanticEngineLabel(t *testing.T) {
+	cfg := semanticTestConfig()
+	st := fake.New()
+	seedSemPosts(st)
+
+	// 开关关 → keyword
+	cfgOff := semanticTestConfig()
+	cfgOff.Features.SemanticSearch = false
+	svcOff := NewSemanticService(cfgOff, st.Posts(), st.Embeddings(), &fakeEmbedder{enabled: true})
+	if _, engine, err := svcOff.Search(context.Background(), "fiber"); err != nil || engine != EngineKeyword {
+		t.Errorf("开关关应报 keyword，得到 %q err=%v", engine, err)
+	}
+
+	// 开关开 + 嵌入失败 → keyword-fallback
+	svcFail := NewSemanticService(cfg, st.Posts(), st.Embeddings(), &fakeEmbedder{enabled: true, fail: true})
+	if _, engine, err := svcFail.Search(context.Background(), "fiber"); err != nil || engine != EngineKeywordFallback {
+		t.Errorf("嵌入失败应报 keyword-fallback，得到 %q err=%v", engine, err)
+	}
+
+	// 开关开 + 正常 → hybrid
+	emb := &fakeEmbedder{enabled: true, vecs: map[string][]float32{"框架": {1, 0, 0, 0}}}
+	st.SetEmbedding(store.EmbeddingDoc{Slug: "fiber", Model: "test-model", Dim: 4,
+		Chunks: []store.EmbeddingChunk{{Idx: 0, Text: "fiber 框架介绍", Vector: []float32{1, 0, 0, 0}}}})
+	svc := NewSemanticService(cfg, st.Posts(), st.Embeddings(), emb)
+	if _, engine, err := svc.Search(context.Background(), "框架"); err != nil || engine != EngineHybrid {
+		t.Errorf("正常语义应报 hybrid，得到 %q err=%v", engine, err)
 	}
 }

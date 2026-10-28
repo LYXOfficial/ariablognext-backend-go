@@ -9,14 +9,18 @@ import "context"
 
 // EmbeddingChunk 是文章的一个分块的向量。Text 保留原文（命中后当 context 片段返回）。
 type EmbeddingChunk struct {
-	Idx    int       `bson:"idx" json:"idx"`
-	Text   string    `bson:"text" json:"text"`
-	Vector []float32 `bson:"vector" json:"vector"`
+	Idx  int    `bson:"idx" json:"idx"`
+	Text string `bson:"text" json:"text"`
+	// truncate：BSON 只有 double，任何写入方（Go 的 float32、Python 的全精度 double）
+	// 落库后都是 double。不加这个 tag，驱动只在「double 能被 float32 精确表示」时
+	// 才允许解码——Python 写入的全精度向量会直接报错，而错误会被语义搜索静默降级
+	// 成关键词搜索（2026-10-28 实际踩过）。加了之后任意精度都能读。
+	Vector []float32 `bson:"vector,truncate" json:"vector"`
 }
 
 // EmbeddingDoc 是一篇文章的全部向量。Slug 作为 _id：一篇文章最多一份向量，
 // upsert 天然幂等；文章删除时按 slug 级联清理。
-// Model/Dim 用于换模型检测：与配置不一致的文档由 build-embeddings 重算。
+// Model/Dim 用于换模型检测：与配置不一致的文档由回填脚本重算（scripts/build_embeddings.py）。
 type EmbeddingDoc struct {
 	Slug  string `bson:"_id" json:"slug"`
 	Model string `bson:"model" json:"model"`

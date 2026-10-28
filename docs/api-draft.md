@@ -415,7 +415,7 @@ Link      { id, name, url, avatar, description, color, latency }
 落地时的预留设计（写进 `design-notes.md §2.6`）：
 - `Posts.embedding []float32` + `EmbeddingMeta{model, dim, updatedAt}`
 - `store.SemanticSearcher` 可选接口，与现有 `Searcher` 并列
-- `cmd/build-embeddings` 增量重建
+- `scripts/build_embeddings.py` 增量重建
 - 配置 `EMBEDDING_MODEL` / `EMBEDDING_API`，缺省时该路由返回 501
 
 ---

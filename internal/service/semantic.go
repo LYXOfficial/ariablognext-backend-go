@@ -67,25 +67,36 @@ func NewSemanticService(cfg *config.Config, posts store.PostRepository, emb stor
 	return &SemanticService{cfg: cfg, posts: posts, emb: emb, embedder: embedder}
 }
 
+// 搜索引擎标识：写进响应头 X-Search-Engine，方便在线上区分
+// 「真的在做语义」和「静默降级成关键词」——2026-10-28 踩过一次静默降级。
+const (
+	EngineHybrid          = "hybrid"           // 语义+关键词 RRF
+	EngineKeyword         = "keyword"          // 开关关闭，纯关键词
+	EngineKeywordFallback = "keyword-fallback" // 开关开着但向量/嵌入出错，降级
+)
+
 // Search 语义开关开 → 混合；关/失败 → 关键词回退。
 // 不限结果个数（2026-10-28 用户定）：语义侧全量过阈值，关键词侧走 full——
 // 结果太多是前端加翻页的事，服务端不擅自砍。
-func (s *SemanticService) Search(ctx context.Context, query string) ([]SemanticResult, error) {
+func (s *SemanticService) Search(ctx context.Context, query string) ([]SemanticResult, string, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil, apperr.New(apperr.ValidationMissingField, "缺少 query",
+		return nil, "", apperr.New(apperr.ValidationMissingField, "缺少 query",
 			apperr.FieldDetails{Fields: []apperr.FieldError{{Field: "query", Message: "必填"}}})
 	}
 	if s.cfg.Features.SemanticSearch && s.embedder.Enabled() {
 		res, err := s.hybrid(ctx, query)
 		if err == nil {
-			return res, nil
+			return res, EngineHybrid, nil
 		}
 		// 向量化/加载失败不把 502 抛给搜索场景——搜索是高频路径，
-		// 降级出结果比报错有用（降级原因进日志）
+		// 降级出结果比报错有用（降级原因进日志，引擎标识进响应头）
 		slog.Warn("语义搜索降级为关键词搜索", "err", err)
+		res, kwErr := s.keywordOnly(ctx, query)
+		return res, EngineKeywordFallback, kwErr
 	}
-	return s.keywordOnly(ctx, query)
+	res, err := s.keywordOnly(ctx, query)
+	return res, EngineKeyword, err
 }
 
 // keywordOnly 纯关键词路径：与 /posts/list?keyword= 同源同序（含标题前置）。

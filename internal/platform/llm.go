@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/LYXOfficial/ariablognext-backend-go/internal/apperr"
 	"github.com/LYXOfficial/ariablognext-backend-go/internal/config"
@@ -26,51 +27,52 @@ func NewLLM(cfg config.SummaryConfig) *LLM {
 func (l *LLM) Enabled() bool { return l.cfg.Enabled && l.cfg.APIKey != "" }
 
 // GenerateSummary 给定标题与 markdown 原文，返回摘要文本。
-// 长文超上下文是常态（设计文档 §16），按 6000 字符分块、分别摘要后合并。
+// summaryPromptPrefix 与旧后端（ariablognext-backend/get/post/main.py 的
+// _request_summary）**逐字一致**，不要改：它承载了 Aria 的人设、篇幅（约一百字）、
+// 不确定内容略过等约束。prompt 任何改动都必须先得到作者同意。
+// 末尾的 \n 也是旧实现的一部分（prompt 末尾换行后直接拼正文）。
+const summaryPromptPrefix = "你是一位专业的作家，接下来请用精炼并平易近人而并不高深的语言，尽可能更可爱且女性化一些，但尽量直截了当描述，不要做作，使用Aria作为作者的自称，写一份一百字左右的文章总结，态度要与作者表达的所保持一致，尽可能不要有幻觉，遇到你所不确定的部分和敏感的（政治或是较负面情绪等内容）请略过而不要回答，而遇到一些晦涩的东西可以尝试解释，接下来给你的文章是markdown格式的，请输出纯文本并使用中文回答我，不要输出多余的内容，只输出文章摘要的正文，不要输出换行符和在编程语言中的非法文字。接下来是文章的正文内容：\n"
+
+// GenerateSummary 生成摘要。行为与旧后端一致：
+//   - 单次请求、整篇正文直接拼在 prompt 后面（旧实现就是如此，不做分块合并）；
+//   - prompt 里不含标题（旧 prompt 只有正文）；
+//   - 响应里的换行全部去掉后入库。
+//
+// title 参数保留是为了上层签名稳定，但不进 prompt——旧后端不传它。
 func (l *LLM) GenerateSummary(ctx context.Context, title, markdown string) (string, error) {
+	_ = title
 	if !l.Enabled() {
 		return "", apperr.New(apperr.UpstreamFailed, "摘要生成服务未启用", nil)
 	}
-	// 上下文保护：超长文先分块（约 6000 字符一块），块数>1 时做「分块摘要 → 合并摘要」
-	const chunkSize = 6000
-	var final string
-	chunks := splitChunks(markdown, chunkSize)
-	if len(chunks) == 1 {
-		out, err := l.chat(ctx, buildSummaryPrompt(title, chunks[0]))
-		if err != nil {
-			return "", err
-		}
-		final = out
-	} else {
-		var partials []string
-		for i, chunk := range chunks {
-			if i >= 6 { // 6 块以上的天书不再细分，直接截断保护上游
-				break
-			}
-			out, err := l.chat(ctx, buildSummaryPrompt(title, chunk))
-			if err != nil {
-				return "", err
-			}
-			partials = append(partials, out)
-		}
-		merged, err := l.chat(ctx, buildMergePrompt(title, partials))
-		if err != nil {
-			return "", err
-		}
-		final = merged
+	out, err := l.chat(ctx, summaryPromptPrefix+markdown)
+	if err != nil {
+		return "", err
 	}
-	return final, nil
+	// 旧后端：response.json()["choices"][0]["message"]["content"].replace("\n", "")
+	return strings.ReplaceAll(out, "\n", ""), nil
 }
 
 // chat 调 SiliconFlow chat/completions。
-func (l *LLM) chat(ctx context.Context, prompt string) (string, error) {
-	body, _ := json.Marshal(map[string]any{
+// chatBody 构造请求体：形状与旧后端一致，模型专属参数（Qwen3 的
+// enable_thinking=false、max_tokens 等）全部由 config.yml 的
+// ai.summary.extraBody 提供，代码里不写任何厂商特判。
+func (l *LLM) chatBody(prompt string) map[string]any {
+	// 请求体形状与旧后端一致：只有 model + messages（**没有 system 消息**，
+	// 也没有 max_tokens）；模型专属参数统一由 config 的 ai.summary.extraBody 提供。
+	body := map[string]any{
 		"model": l.cfg.Model,
 		"messages": []map[string]string{
-			{"role": "system", "content": "你是博客文章摘要助手。请用简体中文输出 2-3 句话的摘要，概括文章核心内容，不要客套话。"},
 			{"role": "user", "content": prompt},
 		},
-	})
+	}
+	for k, v := range l.cfg.ExtraBody {
+		body[k] = v // 配置优先：可以覆盖 model/max_tokens，也可以加任意厂商参数
+	}
+	return body
+}
+
+func (l *LLM) chat(ctx context.Context, prompt string) (string, error) {
+	body, _ := json.Marshal(l.chatBody(prompt))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.cfg.Endpoint, bytes.NewReader(body))
 	if err != nil {
 		return "", apperr.Wrap(apperr.UpstreamFailed, "构造摘要请求失败", err)
@@ -103,36 +105,4 @@ func (l *LLM) chat(ctx context.Context, prompt string) (string, error) {
 			apperr.UpstreamDetails{Cause: string(raw), Upstream: "siliconflow", Status: resp.StatusCode})
 	}
 	return parsed.Choices[0].Message.Content, nil
-}
-
-func buildSummaryPrompt(title, chunk string) string {
-	return "文章标题：" + title + "\n\n以下是文章片段：\n" + chunk + "\n\n请概括这部分内容。"
-}
-
-func buildMergePrompt(title string, partials []string) string {
-	joined := ""
-	for i, p := range partials {
-		joined += fmt.Sprintf("片段%d：%s\n\n", i+1, p)
-	}
-	return "文章标题：" + title + "\n\n以下是对各片段的摘要：\n" + joined + "请合并成一段 2-3 句话的整体摘要。"
-}
-
-// splitChunks 按字符数切分（中文按 rune），带 200 字符重叠避免句子被拦腰截断后丢上下文。
-func splitChunks(s string, size int) []string {
-	r := []rune(s)
-	if len(r) <= size {
-		return []string{s}
-	}
-	var out []string
-	for start := 0; start < len(r); start += size - 200 {
-		end := start + size
-		if end > len(r) {
-			end = len(r)
-		}
-		out = append(out, string(r[start:end]))
-		if end == len(r) {
-			break
-		}
-	}
-	return out
 }

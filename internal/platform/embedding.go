@@ -38,7 +38,7 @@ type embedResponse struct {
 	} `json:"data"`
 }
 
-// Embed 把一批文本向量化。调用方控制批量大小（build-embeddings 用 16/批）；
+// Embed 把一批文本向量化。调用方控制批量大小（回填脚本用 16/批）；
 // 返回的向量已做 L2 归一化——归一化后余弦相似度退化为点积，检索端省一次开方。
 func (e *Embedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if !e.Enabled() {

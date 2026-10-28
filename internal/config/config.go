@@ -194,6 +194,11 @@ type SummaryConfig struct {
 	APIKey   string   `yaml:"apiKey" secret:"true"`
 	Timeout  Duration `yaml:"timeout"`
 	Cooldown Duration `yaml:"cooldown"`
+	// ExtraBody 原样合并进 chat/completions 请求体（覆盖代码里的默认值）。
+	// 用它配置模型专属参数，避免为每个厂商的参数写死分支：
+	//   enable_thinking: false —— Qwen3 默认开思考，一句话要 17-23 秒，
+	//   关闭后 ~3 秒；长文分块摘要不关必然撞穿 90s 路由超时（2026-10-28 线上故障）。
+	ExtraBody map[string]any `yaml:"extraBody"`
 }
 
 type EmbeddingConfig struct {

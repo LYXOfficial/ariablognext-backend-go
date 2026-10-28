@@ -1,12 +1,14 @@
-# 语义搜索向量回填（定时增量）：跑 cmd/build-embeddings。
+# 语义搜索向量回填（定时增量）：跑 scripts/build_embeddings.py。
 #
-# 为什么单独一个 workflow：新增/改文后向量不会即时更新（写路径不内联向量化），
-# 靠这里每 6 小时增量补齐。判定键是 searchText 的 sha256——只有新增/改文/换模型
-# 的篇目会重算（83 篇全量约 9s，增量通常秒级），结果写 PostEmbeddings 集合，
-# 不碰其它集合。用户手动改完文章想立刻生效，本地跑一次 `go run ./cmd/build-embeddings` 也行。
+# 为什么是一个独立 Python 脚本而不是 Go 命令：
+#   - Go 版要过 config.yml 的启动校验，会被逼着配齐 S3/SMTP/GitHub 等
+#     十几个根本用不到的密钥（「变量未定义 = 拒绝启动」）；
+#   - Python 直接读库、调嵌入 API、写 PostEmbeddings，所需配置只有 2 个环境变量
+#     （库名与模型/endpoint 一样是常量，写在脚本里）。
 #
-# 仓库 Settings 需要：Secret: MONGODB_URI / DB_NAME / SECRET / SF_TOKEN（+ S3/SMTP/GH 等
-# config.yml 引用的其余变量，Go 版约定「变量未定义 = 启动失败」）
+# 增量判定：文档里的 textHash 与当前源文本的 sha256 不同（或 model/dim 不匹配、
+# 或缺失）才重算。源文本优先用服务端维护的 searchText，没有则从 mdContent 轻量清洗。
+#
 # ⚠️ Atlas 若开了 IP 白名单，需要放行 GitHub Actions（或 0.0.0.0/0）。
 
 name: Build Embeddings (scheduled backfill)
@@ -15,6 +17,11 @@ on:
   schedule:
     - cron: "37 */6 * * *" # 每 6 小时；错开整点（备份/朋友圈爬取都在整点附近）
   workflow_dispatch:
+    inputs:
+      force:
+        description: 忽略 textHash 全量重算（换模型后用）
+        type: boolean
+        default: false
 
 concurrency:
   group: build-embeddings
@@ -27,31 +34,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-python@v5
         with:
-          go-version-file: go.mod
-          cache: true
+          python-version: "3.13"
 
-      # 直接用主配置：ai.embedding.enabled 已经是 true（语义搜索上线后），
-      # 命令只依赖 embedding 一段配置，无需额外配置文件
+      - name: Install deps
+        run: pip install "pymongo[srv]" certifi
+
       - name: Run incremental backfill
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          SECRET: ${{ secrets.SECRET }}
           SF_TOKEN: ${{ secrets.SF_TOKEN }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
-          S3_ACCESSKEYID: ${{ secrets.S3_ACCESSKEYID }}
-          S3_SECRETACCESSKEY: ${{ secrets.S3_SECRETACCESSKEY }}
-          S3_REGION: ${{ secrets.S3_REGION }}
-          S3_BUCKET: ${{ secrets.S3_BUCKET }}
-          S3_PUBLIC_URL: ${{ secrets.S3_PUBLIC_URL }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_SECURE: ${{ secrets.SMTP_SECURE }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          SMTP_FROM: ${{ secrets.SMTP_FROM }}
-          FLINK_ADMIN_EMAIL: ${{ secrets.FLINK_ADMIN_EMAIL }}
-        run: go run ./cmd/build-embeddings
+        run: |
+          python scripts/build_embeddings.py ${{ github.event.inputs.force == 'true' && '--force' || '' }}

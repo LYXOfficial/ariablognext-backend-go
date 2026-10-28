@@ -179,7 +179,7 @@ var ErrNotImplemented = errors.New("semantic search not implemented")
 - 路由 `GET /posts/semantic?query=&limit=` 现在就注册，固定返回
   `501 search.not_implemented`（文案：「语义搜索还没做，先用关键词搜索」）
 - 数据侧预留：`Posts.embedding []float32` + `Posts.embeddingMeta{model, dim, updatedAt}`，
-  以及 `cmd/build-embeddings`（现在只打印「未配置，跳过」）
+  以及 `scripts/build_embeddings.py`（回填脚本，独立于 Go 配置体系）
 - 配置预留：`EMBEDDING_MODEL`、`EMBEDDING_API`（缺省即功能关闭）
 - 真做的时候：`mongostore` 里实现 `SemanticSearch`（Atlas Vector Search 的 `$vectorSearch`），
   关键词搜索保持不变，两者可并存并用 RRF 融合

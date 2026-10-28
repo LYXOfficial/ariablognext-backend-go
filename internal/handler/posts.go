@@ -196,6 +196,11 @@ func postsSemantic(cfg *config.Config, svc *service.Set) app.Handler {
 		if err != nil {
 			return nil, err
 		}
-		return svc.Semantic.Search(c.Context(), query)
+		results, engine, err := svc.Semantic.Search(c.Context(), query)
+		if err != nil {
+			return nil, err
+		}
+		// 引擎标识走响应头：调用方/排查时一眼看出是语义还是降级
+		return app.WithHeader{Data: results, Header: map[string]string{"X-Search-Engine": engine}}, nil
 	}
 }

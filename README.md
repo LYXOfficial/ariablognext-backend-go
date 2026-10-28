@@ -67,6 +67,7 @@ go test ./...                                 # 单元测试（12 包）
 go test -tags=integration ./...               # 集成测试（需 MONGODB_URI_TEST + TEST_DB_NAME）
 python3 tests/smoke.py                        # 冒烟（服务需在跑）
 go run ./cmd/seeddev                          # 灌开发种子（只允许 *_dev/_test 库）
+python3 scripts/build_embeddings.py           # 语义搜索向量增量回填（需 MONGODB_URI/SF_TOKEN）
 python3 tests/glue_replay.py                  # 跨服务回放（需 glue 在 2335 跑）
 ```
 
