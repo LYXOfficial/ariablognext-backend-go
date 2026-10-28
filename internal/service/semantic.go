@@ -1,10 +1,14 @@
 package service
 
-// SemanticService：语义搜索（/posts/semantic）。
-// 开关语义（2026-10-28 用户定）：features.semanticSearch 开 → 语义+关键词 RRF 混合；
-// 关（或向量化失败降级）→ 纯关键词搜索，调用方永远拿到结果，不再有 501。
-// 防「硬匹」：语义侧有余弦阈值（ai.embedding.minScore），低于阈值不进融合——
-// 全部低于阈值 = 返回纯关键词结果（可能是空数组），保住「没有就说没有」的旧行为。
+// SemanticService：搜索（/posts/semantic）。
+//
+// 结果分层（2026-10-28 用户定）：
+//  1. 关键词精确命中（整段子串，tier 2）——最前
+//  2. 关键词模糊命中（n-gram / 拼写容错 / 别名，tier 1）——中间
+//  3. 语义命中（向量余弦 ≥ minScore）——最后，按余弦从高到低
+//
+// 开关语义：features.semanticSearch 开 → 三层；关（或向量化失败降级）→ 只有关键词两层。
+// 调用方永远拿得到结果，不存在 501。不设条数上限（翻页交给前端）。
 
 import (
 	"context"
@@ -20,32 +24,55 @@ import (
 	"github.com/LYXOfficial/ariablognext-backend-go/internal/store"
 )
 
+// 搜索引擎标识：写进响应头 X-Search-Engine，便于线上区分「真语义」与「静默降级」。
+const (
+	EngineHybrid          = "hybrid"
+	EngineKeyword         = "keyword"
+	EngineKeywordFallback = "keyword-fallback"
+)
+
+// 各层的 score 取值（对外可见，量纲统一为「越大越相关」）：
+// 关键词精确 1.0 > 模糊 0.8 > 语义按余弦（0~1）。
+const (
+	scoreExactKeyword float32 = 1.0
+	scoreFuzzyKeyword float32 = 0.8
+)
+
 // Embedder 是向量化能力的最小接口：为单测注入假实现而设（platform.Embedder 实现它）。
 type Embedder interface {
 	Enabled() bool
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
-// SemanticResult 是 /posts/semantic 的响应项：PostBrief 形状 + score。
-// context 语义与关键词搜索一致（前端拿它做高亮），语义命中时是命中 chunk 的片段。
+// 匹配类型（对外的 matchType 字段）。
+const (
+	MatchTypeExact    = "exact"    // 关键词整段子串命中
+	MatchTypeFuzzy    = "fuzzy"    // n-gram 部分匹配 / 拼写容错 / 别名
+	MatchTypeSemantic = "semantic" // 向量语义命中
+)
+
+// SemanticResult 是 /posts/semantic 的响应项。
 type SemanticResult struct {
 	Slug        string  `json:"slug"`
 	Title       string  `json:"title"`
 	BannerImg   string  `json:"bannerImg"`
 	PublishTime int64   `json:"publishTime"`
 	Context     *string `json:"context"`
-	Score       float32 `json:"score"`
+	// MatchType：exact / fuzzy / semantic，对应结果的三层。
+	MatchType string `json:"matchType"`
+	// MatchScore：匹配度 0~1（精确 1.0、模糊 0.8、语义为余弦）。
+	MatchScore float32 `json:"matchScore"`
+	// Score 是历史字段，与 MatchScore 同值，保留以免破坏已有调用方。
+	Score float32 `json:"score"`
 }
 
-// docsCacheTTL：全量向量在内存里的缓存时长。回填是独立进程，本实例感知不到
-// 它的写入，5 分钟是「改完数据多久生效」的上限——个人博客完全够用。
+// docsCacheTTL：全量向量在内存里的缓存时长（回填是独立进程，这里感知不到它的写入）。
 const docsCacheTTL = 5 * time.Minute
 
 // chunkContextLen 是语义命中返回给前端的片段长度（runes）。
-// SearchBox 高亮按 query 字面匹配，片段太长没意义，太短不够判断相关性。
 const chunkContextLen = 120
 
-// chunkHit 移到包级：hybrid 里构造后要传给 hitSlugs，函数内类型没法跨函数传。
+// chunkHit 是一篇文档的语义命中（取最强的那一块）。
 type chunkHit struct {
 	slug     string
 	score    float32
@@ -67,17 +94,7 @@ func NewSemanticService(cfg *config.Config, posts store.PostRepository, emb stor
 	return &SemanticService{cfg: cfg, posts: posts, emb: emb, embedder: embedder}
 }
 
-// 搜索引擎标识：写进响应头 X-Search-Engine，方便在线上区分
-// 「真的在做语义」和「静默降级成关键词」——2026-10-28 踩过一次静默降级。
-const (
-	EngineHybrid          = "hybrid"           // 语义+关键词 RRF
-	EngineKeyword         = "keyword"          // 开关关闭，纯关键词
-	EngineKeywordFallback = "keyword-fallback" // 开关开着但向量/嵌入出错，降级
-)
-
-// Search 语义开关开 → 混合；关/失败 → 关键词回退。
-// 不限结果个数（2026-10-28 用户定）：语义侧全量过阈值，关键词侧走 full——
-// 结果太多是前端加翻页的事，服务端不擅自砍。
+// Search 返回分层结果与引擎标识。
 func (s *SemanticService) Search(ctx context.Context, query string) ([]SemanticResult, string, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
@@ -89,8 +106,7 @@ func (s *SemanticService) Search(ctx context.Context, query string) ([]SemanticR
 		if err == nil {
 			return res, EngineHybrid, nil
 		}
-		// 向量化/加载失败不把 502 抛给搜索场景——搜索是高频路径，
-		// 降级出结果比报错有用（降级原因进日志，引擎标识进响应头）
+		// 向量化/加载失败不把 502 抛给搜索场景（高频路径）：降级出关键词结果
 		slog.Warn("语义搜索降级为关键词搜索", "err", err)
 		res, kwErr := s.keywordOnly(ctx, query)
 		return res, EngineKeywordFallback, kwErr
@@ -99,23 +115,34 @@ func (s *SemanticService) Search(ctx context.Context, query string) ([]SemanticR
 	return res, EngineKeyword, err
 }
 
-// keywordOnly 纯关键词路径：与 /posts/list?keyword= 同源同序（含标题前置）。
+// keywordFilter 构造关键词过滤条件（含配置化的别名展开）。
+func (s *SemanticService) keywordFilter(query string) store.PostFilter {
+	f := store.PostFilter{Keyword: query, Full: true}
+	f.Aliases = aliasesFor(s.cfg, query)
+	return f
+}
+
+// keywordOnly：语义关闭/降级时使用，与 /posts/list?keyword= 同源同序（精确在前、模糊在后）。
 func (s *SemanticService) keywordOnly(ctx context.Context, query string) ([]SemanticResult, error) {
-	res, err := s.posts.Page(ctx, store.PostFilter{Keyword: query, Full: true}, s.cfg.Location())
+	page, err := s.posts.Page(ctx, s.keywordFilter(query), s.cfg.Location())
 	if err != nil {
 		return nil, err
 	}
-	out := make([]SemanticResult, 0, len(res.Items))
-	for i, p := range res.Items {
-		out = append(out, postToResult(p, rankScore(i)))
+	out := make([]SemanticResult, 0, len(page.Items))
+	for _, p := range page.Items {
+		out = append(out, keywordResult(p))
 	}
 	return out, nil
 }
 
-// hybrid：语义召回 ∪ 关键词召回，RRF（1/(60+rank)）融合。
-// 专有名词/代码标识符靠关键词兜底，同义表达靠向量，两者互补。
-// 语义侧过 minScore 阈值：防止「库里没有相关内容也硬排 top-N」。
+// hybrid：关键词两层 + 语义层。
+// 关键词命中过的文章不再出现在语义层（避免重复），语义层内部按余弦降序。
 func (s *SemanticService) hybrid(ctx context.Context, query string) ([]SemanticResult, error) {
+	kwPage, err := s.posts.Page(ctx, s.keywordFilter(query), s.cfg.Location())
+	if err != nil {
+		return nil, err
+	}
+
 	vecs, err := s.embedder.Embed(ctx, []string{query})
 	if err != nil {
 		return nil, err
@@ -129,18 +156,16 @@ func (s *SemanticService) hybrid(ctx context.Context, query string) ([]SemanticR
 	}
 	minScore := float32(s.cfg.AI.Embedding.MinScore)
 	if minScore <= 0 {
-		// 实测校准（2026-10-28）：真相关 0.53-0.67，硬匹（演唱会门票→公交换乘题）0.51
 		minScore = 0.52
 	}
 
-	// 语义侧：slug → 最高分 chunk（一篇文章多块取最强信号）
+	// 语义层：每篇取最强块，按余弦降序
 	var semHits []chunkHit
 	for _, d := range docs {
 		if d.Model != s.cfg.AI.Embedding.Model || d.Dim != s.cfg.AI.Embedding.Dim {
-			continue // 模型/维度不匹配的旧向量不参与（等 build-embeddings 重算）
+			continue // 模型/维度不匹配的旧向量不参与（等回填重算）
 		}
-		best := -1
-		bestScore := float32(-2)
+		best, bestScore := -1, float32(-2)
 		for _, c := range d.Chunks {
 			if len(c.Vector) != len(vecs[0]) {
 				continue
@@ -153,67 +178,70 @@ func (s *SemanticService) hybrid(ctx context.Context, query string) ([]SemanticR
 				bestScore, best = dot, c.Idx
 			}
 		}
-		if best >= 0 && bestScore >= minScore { // 阈值在这里，低于它不硬凑
+		if best >= 0 && bestScore >= minScore {
 			semHits = append(semHits, chunkHit{slug: d.Slug, score: bestScore, chunkIdx: best})
 		}
 	}
 	sort.Slice(semHits, func(i, j int) bool { return semHits[i].score > semHits[j].score })
 
-	// 关键词侧：同一套管线（含标题前置排序），full 拉全量
-	kwRes, err := s.posts.Page(ctx, store.PostFilter{Keyword: query, Full: true}, s.cfg.Location())
-	if err != nil {
-		return nil, err
+	out := make([]SemanticResult, 0, len(kwPage.Items)+len(semHits))
+	seen := make(map[string]bool, len(kwPage.Items))
+	// 第一、二层：存储层已按 tier（精确→模糊）排好
+	for _, p := range kwPage.Items {
+		out = append(out, keywordResult(p))
+		seen[p.Slug] = true
 	}
-
-	fused := rrfMerge(hitSlugs(semHits), postSlugs(kwRes.Items))
-
-	semBySlug := map[string]chunkHit{}
+	// 第三层：语义命中，余弦从高到低
 	for _, h := range semHits {
-		semBySlug[h.slug] = h
-	}
-	kwBySlug := map[string]model.Post{}
-	for _, p := range kwRes.Items {
-		kwBySlug[p.Slug] = p
-	}
-
-	out := make([]SemanticResult, 0, len(fused))
-	for rank, slug := range fused {
-		var brief model.PostBrief
-		if p, ok := kwBySlug[slug]; ok {
-			brief = p.Brief()
-		} else {
-			p, err := s.posts.BySlug(ctx, slug)
-			if err != nil {
-				continue // 向量比正文新（文章刚删）——跳过，等回填清理
-			}
-			brief = p.Brief()
+		if seen[h.slug] {
+			continue
+		}
+		p, err := s.posts.BySlug(ctx, h.slug)
+		if err != nil {
+			continue // 向量比正文新（文章刚删）
 		}
 		item := SemanticResult{
-			Slug: brief.Slug, Title: brief.Title,
-			BannerImg: brief.BannerImg, PublishTime: brief.PublishTime,
-			Score: rankScore(rank),
+			Slug: p.Slug, Title: p.Title, BannerImg: p.BannerImg,
+			PublishTime: p.PublishTime,
+			MatchType:   MatchTypeSemantic,
+			MatchScore:  h.score,
+			Score:       h.score,
 		}
-		if h, ok := semBySlug[slug]; ok {
-			// 命中 chunk 的开头当片段：可能含 query 字面（前端高亮就生效），
-			// 不含也无所谓（语义相关本身就是片段成立的理由）
-			for _, d := range docs {
-				if d.Slug != slug {
-					continue
-				}
-				for _, c := range d.Chunks {
-					if c.Idx == h.chunkIdx {
-						ctxText := chunkSnippet(c.Text)
-						item.Context = &ctxText
-					}
-				}
-			}
-		} else if brief.Context != nil {
-			ctxText := *brief.Context
-			item.Context = &ctxText
-		}
+		item.Context = s.chunkContext(docs, h)
 		out = append(out, item)
 	}
 	return out, nil
+}
+
+// chunkContext 取命中块的开头做片段（前端高亮会在含 query 字面时生效）。
+func (s *SemanticService) chunkContext(docs []store.EmbeddingDoc, h chunkHit) *string {
+	for _, d := range docs {
+		if d.Slug != h.slug {
+			continue
+		}
+		for _, c := range d.Chunks {
+			if c.Idx == h.chunkIdx {
+				text := truncateRunes(c.Text, chunkContextLen)
+				return &text
+			}
+		}
+	}
+	return nil
+}
+
+// keywordResult 把关键词命中转成响应项：按 tier 给固定 score。
+func keywordResult(p model.Post) SemanticResult {
+	item := SemanticResult{
+		Slug: p.Slug, Title: p.Title, BannerImg: p.BannerImg,
+		PublishTime: p.PublishTime, Context: p.Context,
+		MatchType: MatchTypeFuzzy, MatchScore: scoreFuzzyKeyword, Score: scoreFuzzyKeyword,
+	}
+	if p.MatchTier >= 2 {
+		item.MatchType = MatchTypeExact
+		item.MatchScore = scoreExactKeyword
+		item.Score = scoreExactKeyword
+	}
+	return item
 }
 
 // loadDocs 带缓存的全量向量加载。
@@ -230,57 +258,3 @@ func (s *SemanticService) loadDocs(ctx context.Context) ([]store.EmbeddingDoc, e
 	s.cache, s.cacheAt = docs, time.Now()
 	return docs, nil
 }
-
-// rrfMerge 多路召回融合：score = Σ 1/(60+rank)。60 是论文标准参数，
-// 抑制单路 rank 的极端权重；返回按融合分降序、去重。
-func rrfMerge(rankLists ...[]string) []string {
-	const k = 60
-	scores := map[string]float32{}
-	for _, list := range rankLists {
-		for i, slug := range list {
-			scores[slug] += 1 / float32(k+i+1)
-		}
-	}
-	slugs := make([]string, 0, len(scores))
-	for slug := range scores {
-		slugs = append(slugs, slug)
-	}
-	sort.Slice(slugs, func(i, j int) bool { return scores[slugs[i]] > scores[slugs[j]] })
-	return slugs
-}
-
-func hitSlugs(hits []chunkHit) []string {
-	out := make([]string, 0, len(hits))
-	for _, h := range hits {
-		out = append(out, h.slug)
-	}
-	return out
-}
-
-func postSlugs(posts []model.Post) []string {
-	out := make([]string, 0, len(posts))
-	for _, p := range posts {
-		out = append(out, p.Slug)
-	}
-	return out
-}
-
-func postToResult(p model.Post, score float32) SemanticResult {
-	item := SemanticResult{
-		Slug: p.Slug, Title: p.Title, BannerImg: p.BannerImg,
-		PublishTime: p.PublishTime, Score: score,
-	}
-	if p.Context != nil {
-		ctxText := *p.Context
-		item.Context = &ctxText
-	}
-	return item
-}
-
-// rankScore 把名次折算成响应里的 score：同 RRF 公式，保证开关两侧的
-// score 量纲一致（前端如果要按 score 过滤/排序，两个模式下行为相同）。
-func rankScore(rank int) float32 { return 1 / float32(60+rank+1) }
-
-// chunkSnippet 语义命中的片段：复用 writes.go 的 truncateRunes（不额外造轮子），
-// 但语义片段带省略号更自然——算了，保持一致不加深浅差异，直接截断。
-func chunkSnippet(s string) string { return truncateRunes(s, chunkContextLen) }

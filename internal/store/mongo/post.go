@@ -166,17 +166,13 @@ func yearMonthRange(year, month int, loc *time.Location) (int64, int64) {
 }
 
 func (r *postRepo) Page(ctx context.Context, f store.PostFilter, loc *time.Location) (store.Page[model.Post], error) {
-	// 关键词搜索且库里存在「没有 searchText」的文档（生产库就是这种：云端库只读、不回填）
-	// → 必须走 Go 侧全文匹配。否则正则只能落在 title/plainContent 上，而 plainContent
-	// 在库里被截断到 201 字，正文中段的关键词永远搜不到（旧后端搜的是全文 mdContent）。
+	// 关键词搜索统一走 Go 侧全文匹配（pageFullText）：
+	//   - 生产库没有 searchText（云端只读不回填），正则只能落 title/plainContent，
+	//     而 plainContent 截断到 201 字，正文中段永远搜不到；
+	//   - 更重要的：关键词语义（中文子串、英文整词、n-gram 部分匹配）只在 Go 里有
+	//     一份实现，mongo 正则无法表达，两套并存必然出现「开发环境能搜到、线上搜不到」。
 	if len(SplitKeywords(f.Keyword)) > 0 {
-		missing, err := r.coll.CountDocuments(ctx, bson.M{"searchText": bson.M{"$exists": false}})
-		if err != nil {
-			return store.Page[model.Post]{}, wrapMongo(err)
-		}
-		if missing > 0 {
-			return r.pageFullText(ctx, f, loc)
-		}
+		return r.pageFullText(ctx, f, loc)
 	}
 
 	q, err := buildPostQuery(f, loc)
@@ -221,34 +217,8 @@ func (r *postRepo) Page(ctx context.Context, f store.PostFilter, loc *time.Locat
 	// 搜索命中时 searchText 也在投影里（算 context 用），但 Post 模型没有这个字段，
 	// 所以扫描进「带 searchText 的影子结构」再转模型；普通查询直接扫模型，省一次转换。
 	var items []model.Post
-	if f.Keyword != "" {
-		rows := []postRow{}
-		if err := cursor.All(ctx, &rows); err != nil {
-			return store.Page[model.Post]{}, wrapMongo(err)
-		}
-		items = make([]model.Post, 0, len(rows))
-		// context 片段按第一个关键词定位（多关键词时展示第一个命中处足够）
-		kw := ""
-		if kws := SplitKeywords(f.Keyword); len(kws) > 0 {
-			kw = strings.ToLower(kws[0])
-		}
-		for _, row := range rows {
-			p := row.Post
-			// fallback 文档没有 searchText：context 退回 plainContent 定位
-			source := row.SearchText
-			if source == "" {
-				source = row.PlainContent
-			}
-			if ctxStr := textutil.SearchContext(source, kw, contextRadius); ctxStr != "" {
-				ctxCopy := ctxStr
-				p.Context = &ctxCopy
-			}
-			items = append(items, p)
-		}
-	} else {
-		if err := cursor.All(ctx, &items); err != nil {
-			return store.Page[model.Post]{}, wrapMongo(err)
-		}
+	if err := cursor.All(ctx, &items); err != nil {
+		return store.Page[model.Post]{}, wrapMongo(err)
 	}
 	if items == nil {
 		items = []model.Post{}
@@ -272,20 +242,114 @@ func (r *postRepo) Page(ctx context.Context, f store.PostFilter, loc *time.Locat
 //  2. 在 Go 里还原每篇的可检索文本：优先用已有 searchText，没有就用 title+mdContent 现算
 //     （现算会剥掉 Markdown 与外挂标签，所以搜 "fold" 不会命中 <Folding> 这类结构）；
 //  3. 多关键词 AND、titleOnly、排序、分页、context 片段全部在 Go 里完成。
+//
+// postRowProjection 是全文检索需要加载的字段集合（context 需要 searchText/mdContent）。
+var postRowProjection = bson.M{
+	"slug": 1, "title": 1, "category": 1, "tags": 1, "bannerImg": 1,
+	"description": 1, "coverFit": 1, "publishTime": 1, "lastUpdatedTime": 1,
+	"wordCount": 1, "plainContent": 1, "mdContent": 1, "searchText": 1,
+}
+
+// pageFullText 是关键词搜索的唯一实现（生产库没有 searchText，必须走 Go 侧全文匹配）。
+// 结果分两层：精确（tier 2）在前、模糊/别名（tier 1）在后，由 service 层再拼上语义结果。
 func (r *postRepo) pageFullText(ctx context.Context, f store.PostFilter, loc *time.Location) (store.Page[model.Post], error) {
+	f.Aliases = r.gateAliases(ctx, f.Aliases)
 	kws := SplitKeywords(f.Keyword)
-	// 非关键词过滤条件（把 Keyword 置空，避免 buildPostQuery 生成半套正则条件）
 	noKeyword := f
 	noKeyword.Keyword = ""
-	q, err := buildPostQuery(noKeyword, loc)
+	noKeyword.Aliases = nil
+
+	exact, err := r.exactHits(ctx, f, noKeyword, kws, loc)
 	if err != nil {
 		return store.Page[model.Post]{}, err
 	}
+	// 模糊层始终参与（不只精确为空时）：用户要求「精确在前、模糊在后」，
+	// 若只在精确为空时兜底，就无法呈现这种分层。
+	var fuzzy []keywordHit
+	if !f.TitleOnly {
+		fuzzy, err = r.fuzzyHits(ctx, f, noKeyword, loc)
+		if err != nil {
+			return store.Page[model.Post]{}, err
+		}
+	}
+	seen := make(map[string]bool, len(exact))
+	for _, h := range exact {
+		seen[h.post.Slug] = true
+	}
+	merged := exact
+	for _, h := range fuzzy {
+		if !seen[h.post.Slug] {
+			merged = append(merged, h)
+		}
+	}
 
-	// 服务端预过滤：第一个关键词命中 title 或 mdContent 的才进候选集。
-	// Go 侧匹配域是 title+清洗后正文，原始 mdContent ⊇ 清洗后正文，
-	// 所以这里是超集过滤——多命中的候选会被下面的完整过滤拒绝，不会漏也不会错。
-	// （大小写不敏感与 Go 侧 ToLower 对齐；QuoteMeta 保持字面匹配语义。）
+	count := int64(len(merged))
+	if f.CountOnly {
+		return store.Page[model.Post]{Count: count}, nil
+	}
+	items := buildKeywordItems(merged, f, strings.ToLower(kws[0]))
+	page := store.Page[model.Post]{Items: items, Count: count}
+	if !f.Full && f.PageSize > 0 {
+		page.HasMore = int64(f.Page*f.PageSize) < count
+	}
+	return page, nil
+}
+
+// gateAliases 给普通词别名做稀有度门控；/正则/ 别名是显式概念规则，不受限。
+func (r *postRepo) gateAliases(ctx context.Context, aliases []string) []string {
+	if len(aliases) == 0 {
+		return nil
+	}
+	total, err := r.coll.CountDocuments(ctx, bson.M{})
+	if err != nil {
+		return aliases // 统计失败不阻塞搜索，放行全部
+	}
+	kept := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		if _, isRegex := textutil.ParseAlias(alias); isRegex {
+			kept = append(kept, alias)
+			continue
+		}
+		re := bson.Regex{Pattern: regexp.QuoteMeta(strings.ToLower(alias)), Options: "i"}
+		n, err := r.coll.CountDocuments(ctx, bson.M{"$or": bson.A{
+			bson.M{"title": re}, bson.M{"mdContent": re},
+		}})
+		if err != nil || (total > 0 && n*4 > total) {
+			continue // 统计失败或超过 25% 都丢弃（宁缺勿滥）
+		}
+		kept = append(kept, alias)
+	}
+	return kept
+}
+
+// loadRows 按过滤条件加载候选文档。
+func (r *postRepo) loadRows(ctx context.Context, q bson.M) ([]postRow, error) {
+	cursor, err := r.coll.Find(ctx, q, options.Find().SetProjection(postRowProjection))
+	if err != nil {
+		return nil, wrapMongo(err)
+	}
+	rows := []postRow{}
+	if err := cursor.All(ctx, &rows); err != nil {
+		return nil, wrapMongo(err)
+	}
+	return rows, nil
+}
+
+// rowText 取一篇文档的可检索文本（searchText 优先，缺失则现算）。
+func rowText(row postRow) string {
+	if row.SearchText != "" {
+		return row.SearchText
+	}
+	return textutil.BuildSearchText(row.Title, row.MdContent)
+}
+
+// exactHits：精确层。所有关键词都命中（中文子串/英文整词）才算 tier 2；
+// 只有别名命中的算 tier 1（别名不是完整子串命中，排模糊档）。
+func (r *postRepo) exactHits(ctx context.Context, f store.PostFilter, noKeyword store.PostFilter, kws []string, loc *time.Location) ([]keywordHit, error) {
+	q, err := buildPostQuery(noKeyword, loc)
+	if err != nil {
+		return nil, err
+	}
 	if len(kws) > 0 {
 		re := bson.Regex{Pattern: regexp.QuoteMeta(kws[0]), Options: "i"}
 		if f.TitleOnly {
@@ -294,95 +358,161 @@ func (r *postRepo) pageFullText(ctx context.Context, f store.PostFilter, loc *ti
 			q["$or"] = bson.A{bson.M{"title": re}, bson.M{"mdContent": re}}
 		}
 	}
-
-	cursor, err := r.coll.Find(ctx, q, options.Find().SetProjection(bson.M{
-		"slug": 1, "title": 1, "category": 1, "tags": 1, "bannerImg": 1,
-		"description": 1, "coverFit": 1, "publishTime": 1, "lastUpdatedTime": 1,
-		"wordCount": 1, "plainContent": 1, "mdContent": 1, "searchText": 1,
-	}))
+	rows, err := r.loadRows(ctx, q)
 	if err != nil {
-		return store.Page[model.Post]{}, wrapMongo(err)
+		return nil, err
 	}
-	rows := []postRow{}
-	if err := cursor.All(ctx, &rows); err != nil {
-		return store.Page[model.Post]{}, wrapMongo(err)
-	}
-
 	lowered := make([]string, len(kws))
 	for i, kw := range kws {
 		lowered[i] = strings.ToLower(kw)
 	}
 
-	matched := make([]model.Post, 0, len(rows))
-	contexts := make([]string, 0, len(rows))
+	matched := make([]keywordHit, 0, len(rows))
 	for _, row := range rows {
-		// 可检索文本：搜索命中判断与 context 取片段共用同一份
-		text := row.SearchText
-		if text == "" {
-			text = textutil.BuildSearchText(row.Title, row.MdContent)
-		}
+		text := rowText(row)
 		target := text
 		if f.TitleOnly {
 			target = strings.ToLower(row.Title)
 		}
 		ok := true
 		for _, kw := range lowered {
-			if !strings.Contains(target, kw) {
+			if !textutil.ContainsTerm(target, kw) {
 				ok = false
 				break
 			}
 		}
+		snippet, weight, tier := lowered[0], 4, 2
 		if !ok {
+			snippet, weight, tier = "", 0, 1
+			for _, alias := range f.Aliases {
+				if m, w, sn := textutil.AliasMatch(text, alias); m {
+					if w > 3 {
+						w = 3
+					}
+					snippet, weight, tier = sn, w, 1
+					break
+				}
+			}
+			if snippet == "" {
+				continue
+			}
+		}
+		p := row.Post
+		p.Normalize()
+		matched = append(matched, keywordHit{post: p, text: text, weight: weight, tier: tier, snippet: snippet})
+	}
+	return matched, nil
+}
+
+// fuzzyHits：模糊层。中文 n-gram / 英文拼写容错 / 别名兜底，统一 tier 1。
+func (r *postRepo) fuzzyHits(ctx context.Context, f store.PostFilter, noKeyword store.PostFilter, loc *time.Location) ([]keywordHit, error) {
+	pattern := textutil.FuzzyRegexPattern(f.Keyword)
+	if pattern == "" {
+		return nil, nil
+	}
+	q, err := buildPostQuery(noKeyword, loc)
+	if err != nil {
+		return nil, err
+	}
+	re := bson.Regex{Pattern: pattern, Options: "i"}
+	q["$or"] = bson.A{bson.M{"title": re}, bson.M{"mdContent": re}}
+	rows, err := r.loadRows(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	texts := make([]string, 0, len(rows))
+	for _, row := range rows {
+		texts = append(texts, rowText(row))
+	}
+	total, err := r.coll.CountDocuments(ctx, bson.M{})
+	if err != nil {
+		return nil, wrapMongo(err)
+	}
+	stats := textutil.BuildStats(texts, f.Keyword)
+	if int64(stats.N) < total {
+		stats.N = int(total)
+	}
+
+	var hits []keywordHit
+	for i, row := range rows {
+		m := textutil.ScoreKeywordStats(texts[i], f.Keyword, stats)
+		if !m.Matched {
+			for _, alias := range f.Aliases {
+				if ok, w, sn := textutil.AliasMatch(texts[i], alias); ok {
+					if w > 3 {
+						w = 3
+					}
+					m = textutil.KeywordMatch{Matched: true, Weight: w, Snippet: sn}
+					break
+				}
+			}
+		}
+		if !m.Matched {
 			continue
 		}
 		p := row.Post
 		p.Normalize()
-		matched = append(matched, p)
-		contexts = append(contexts, text)
+		hits = append(hits, keywordHit{post: p, text: texts[i], weight: m.Weight, tier: 1, snippet: m.Snippet})
 	}
+	return hits, nil
+}
 
-	// 排序：publishTime 升/降序（与主查询路径一致）
-	sort.SliceStable(matched, func(i, j int) bool {
-		if f.OrderAsc {
-			return matched[i].PublishTime < matched[j].PublishTime
+// keywordHit 把「文章 + 可检索文本 + 层级」绑在一起。
+// 曾经是 matched[] 与 contexts[] 两个平行切片，排序只排了前者导致 context 错位
+// （2026-10-28 线上故障：北京游记挂出重庆地铁的正文）。
+type keywordHit struct {
+	post    model.Post
+	text    string
+	weight  int // 同层内排序权重
+	tier    int // 2 = 精确命中；1 = 模糊/别名
+	snippet string
+}
+
+// buildKeywordItems 排序（层级 → 权重 → 时间）、分页，并把 context 绑回各自文章。
+func buildKeywordItems(hits []keywordHit, f store.PostFilter, keyword string) []model.Post {
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].tier != hits[j].tier {
+			return hits[i].tier > hits[j].tier
 		}
-		return matched[i].PublishTime > matched[j].PublishTime
+		if hits[i].weight != hits[j].weight {
+			return hits[i].weight > hits[j].weight
+		}
+		if f.OrderAsc {
+			return hits[i].post.PublishTime < hits[j].post.PublishTime
+		}
+		return hits[i].post.PublishTime > hits[j].post.PublishTime
 	})
 
-	count := int64(len(matched))
-	if f.CountOnly {
-		return store.Page[model.Post]{Count: count}, nil
-	}
-
-	start, end := 0, len(matched)
+	start, end := 0, len(hits)
 	if !f.Full {
 		start = (f.Page - 1) * f.PageSize
-		if start > len(matched) {
-			start = len(matched)
+		if start > len(hits) {
+			start = len(hits)
 		}
 		end = start + f.PageSize
-		if end > len(matched) {
-			end = len(matched)
+		if end > len(hits) {
+			end = len(hits)
 		}
 	}
 	items := make([]model.Post, 0, end-start)
 	for i := start; i < end; i++ {
-		p := matched[i]
-		// context 用第一个关键词定位（与主查询路径一致）
-		if c := textutil.SearchContext(contexts[i], lowered[0], contextRadius); c != "" {
+		hit := hits[i]
+		p := hit.post
+		snippet := hit.snippet
+		if snippet == "" {
+			snippet = keyword
+		}
+		if c := textutil.SearchContext(hit.text, snippet, contextRadius); c != "" {
 			p.Context = &c
 		}
+		p.MatchTier = hit.tier
 		if !f.WithContent {
 			p.MdContent = ""
 		}
 		truncateListPlain(&p)
 		items = append(items, p)
 	}
-	page := store.Page[model.Post]{Items: items, Count: count}
-	if !f.Full && f.PageSize > 0 {
-		page.HasMore = int64(f.Page*f.PageSize) < count
-	}
-	return page, nil
+	return items
 }
 
 func (r *postRepo) BySlug(ctx context.Context, slug string) (*model.Post, error) {

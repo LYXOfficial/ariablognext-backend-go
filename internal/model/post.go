@@ -24,6 +24,9 @@ type Post struct {
 	// mdContent 带 omitempty：列表走投影时键必须整段消失（mongo 投影行为），
 	// fake 实现靠置空串 + omitempty 达成同一形状；detail 场景正文非空键照常出现
 	MdContent string `bson:"mdContent" json:"mdContent,omitempty"`
+	// MatchTier 是本次检索的匹配层级：2 = 精确命中，1 = 模糊/别名命。0 = 未标记。
+	// 只在搜索路径由存储层填充，不落库、不对外输出（service 用它分层排序）。
+	MatchTier int `bson:"-" json:"-"`
 	// SearchText 是搜索索引字段：写入时由服务端维护，对外 JSON 永不输出（json:"-"）。
 	// 放在模型上是因为 Create 的写入载体就是 Post；查询走投影不进模型。
 	SearchText string `bson:"searchText,omitempty" json:"-"`

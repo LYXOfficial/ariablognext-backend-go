@@ -118,6 +118,10 @@ type SearchConfig struct {
 	MaxKeywordLength int  `yaml:"maxKeywordLength"`
 	ContextRadius    int  `yaml:"contextRadius"`
 	TitleBoost       bool `yaml:"titleBoost"`
+	// Synonyms 是配置化的同义词/别名：键是查询词，值是「也算命中」的额外词。
+	// 原词命中排在前，别名命中只作兜底补充。
+	// 例：图床: ["R2", "img.0v0.my"] —— 搜「图床」也能找到只写了 R2 的文章。
+	Synonyms map[string][]string `yaml:"synonyms"`
 }
 
 type MediaConfig struct {

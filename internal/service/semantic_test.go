@@ -179,3 +179,61 @@ func TestSemanticEngineLabel(t *testing.T) {
 		t.Errorf("正常语义应报 hybrid，得到 %q err=%v", engine, err)
 	}
 }
+
+// 分层排序（2026-10-28 用户定）：关键词精确 → 关键词模糊 → 语义，语义按余弦降序。
+func TestSemanticTierOrder(t *testing.T) {
+	cfg := semanticTestConfig()
+	emb := &fakeEmbedder{enabled: true, vecs: map[string][]float32{
+		"小红书": {1, 0, 0, 0},
+	}}
+	svc, st := semanticTestService(t, cfg, emb)
+	st.SetPosts([]model.Post{
+		// A：精确命中（正文含完整查询词）
+		{Slug: "exact", Title: "小红书运营", MdContent: "小红书 运营笔记", PlainContent: "小红书运营", PublishTime: 300},
+		// B：只有模糊命中（共享三元组 小红书？不——用另一篇共享 n-gram）
+		{Slug: "fuzzy", Title: "书单", MdContent: "今天推荐一本红书和小说", PlainContent: "书单", PublishTime: 200},
+		// C：只有语义命中（向量平行但正文不含查询词）
+		{Slug: "semantic", Title: "社区产品", MdContent: "一个内容社区的产品设计", PlainContent: "社区产品", PublishTime: 100},
+	})
+	st.SetEmbedding(store.EmbeddingDoc{Slug: "semantic", Model: "test-model", Dim: 4,
+		Chunks: []store.EmbeddingChunk{{Idx: 0, Text: "内容社区产品设计", Vector: []float32{1, 0, 0, 0}}}})
+
+	res, engine, err := svc.Search(context.Background(), "小红书")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if engine != EngineHybrid {
+		t.Fatalf("应为 hybrid：%s", engine)
+	}
+	if len(res) < 2 {
+		t.Fatalf("结果太少：%+v", res)
+	}
+	if res[0].Slug != "exact" {
+		t.Errorf("第一条应是精确命中，实际 %s", res[0].Slug)
+	}
+	if res[0].MatchType != MatchTypeExact || res[0].MatchScore != 1.0 {
+		t.Errorf("精确命中应标 exact/1.0：%+v", res[0])
+	}
+	// 语义命中（若有）必须排在所有关键词命中之后，且 score 单调不增
+	semIdx := -1
+	for i, r := range res {
+		if r.Slug == "semantic" {
+			semIdx = i
+		}
+	}
+	if semIdx == 0 {
+		t.Error("纯语义结果不该排第一")
+	}
+	for i := 1; i < len(res); i++ {
+		if res[i].MatchScore > res[i-1].MatchScore+1e-6 {
+			t.Errorf("matchScore 应单调不增：%v", res)
+			break
+		}
+		if res[i].Score != res[i].MatchScore {
+			t.Errorf("score 应与 matchScore 同值（兼容字段）：%v", res[i])
+		}
+		if res[i].MatchType == "" {
+			t.Errorf("matchType 不应为空：%v", res[i])
+		}
+	}
+}

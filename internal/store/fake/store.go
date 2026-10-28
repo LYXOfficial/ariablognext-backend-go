@@ -135,29 +135,63 @@ func (r postRepo) Page(ctx context.Context, f store.PostFilter, loc *time.Locati
 		if f.Year > 0 && !inYearMonth(p.PublishTime, loc, f.Year, f.Month) {
 			continue
 		}
-		if kws := splitKeywords(f.Keyword); len(kws) > 0 {
-			// 与 mongo 实现同一语义：空格分隔多关键词、AND、大小写不敏感（$options:"i"）、
-			// 按「剥离 Markdown 后的全文」匹配。不能用 plainContent（库里截断到 201 字，
-			// 正文中段会搜不到）；也不能直接匹配 mdContent（会命中 <Folding> 这类结构标记）。
+		ok, tier := true, 0
+		if f.Keyword != "" {
+			// 与 mongo 实现同一语义：空格分隔多关键词、AND、大小写不敏感、
+			// 按「剥离 Markdown 后的全文」匹配；精确命中 tier 2，模糊/别名 tier 1。
 			title := strings.ToLower(p.Title)
 			text := textutil.BuildSearchText(p.Title, p.MdContent)
-			matched := true
-			for _, kw := range kws {
-				kw = strings.ToLower(kw) // mongo 是 $options:"i"，fake 必须同语义
+			ok = true
+			for _, kw := range splitKeywords(f.Keyword) {
+				kw = strings.ToLower(kw)
 				if f.TitleOnly {
-					if !strings.Contains(title, kw) {
-						matched = false
+					if !textutil.ContainsTerm(title, kw) {
+						ok = false
 						break
 					}
-				} else if !strings.Contains(title, kw) && !strings.Contains(text, kw) {
-					matched = false
+				} else if !textutil.ContainsTerm(title, kw) && !textutil.ContainsTerm(text, kw) {
+					ok = false
 					break
 				}
 			}
-			if !matched {
+			if ok {
+				tier = 2
+			}
+			if !ok && !f.TitleOnly {
+				if m := textutil.ScoreKeyword(text, f.Keyword); m.Matched {
+					ok, tier = true, 1
+				}
+				if !ok {
+					for _, alias := range f.Aliases {
+						if hit, _, _ := textutil.AliasMatch(text, alias); hit {
+							ok, tier = true, 1
+							break
+						}
+					}
+				}
+			}
+			if !ok {
 				continue
 			}
+			// 与 mongo 一致：命中时填 context 片段（精确用关键词，模糊用命中的 n-gram）
+			snippet := strings.ToLower(splitKeywords(f.Keyword)[0])
+			if tier == 1 {
+				if m := textutil.ScoreKeyword(text, f.Keyword); m.Matched && m.Snippet != "" {
+					snippet = m.Snippet
+				} else {
+					for _, alias := range f.Aliases {
+						if hit, _, sn := textutil.AliasMatch(text, alias); hit && sn != "" {
+							snippet = sn
+							break
+						}
+					}
+				}
+			}
+			if c := textutil.SearchContext(text, snippet, 50); c != "" {
+				p.Context = &c
+			}
 		}
+		p.MatchTier = tier
 		matched = append(matched, p)
 	}
 

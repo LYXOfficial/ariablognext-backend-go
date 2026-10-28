@@ -14,15 +14,18 @@ type Page[T any] struct {
 
 // PostFilter 同时服务 list 与 count：CountOnly=true 时实现方必须完全跳过查询主体。
 type PostFilter struct {
-	Page        int
-	PageSize    int  // 具体条数；Full=true 时忽略
-	Full        bool // pageSize=full
-	CountOnly   bool
-	Category    string
-	Tag         string
-	Year        int // 0 表示不限；与 Month 组合时按 loc 计算月界
-	Month       int
-	Keyword     string
+	Page      int
+	PageSize  int  // 具体条数；Full=true 时忽略
+	Full      bool // pageSize=full
+	CountOnly bool
+	Category  string
+	Tag       string
+	Year      int // 0 表示不限；与 Month 组合时按 loc 计算月界
+	Month     int
+	Keyword   string
+	// Aliases 是同义词展开（由 service 从 config.Synonyms 解析）。
+	// 命中 Aliases 的文章也算搜到，但排位权重低于原词命中。
+	Aliases     []string
 	TitleOnly   bool
 	WithContent bool
 	OrderAsc    bool

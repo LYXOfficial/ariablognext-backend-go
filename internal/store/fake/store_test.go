@@ -174,3 +174,27 @@ func keysOf(m map[string][]json.RawMessage) []string {
 	}
 	return out
 }
+
+// 同义词/别名：搜「图床」应命中只写了 R2 的文章（原词结果优先）。
+func TestKeywordAliasMatch(t *testing.T) {
+	st := New()
+	st.SetPosts([]model.Post{
+		{Slug: "a", Title: "图床迁移", MdContent: "把图片放到图床。", PublishTime: 2},
+		{Slug: "b", Title: "R2 使用记", MdContent: "用 R2 当图床后端。", PublishTime: 1},
+		{Slug: "c", Title: "无关", MdContent: "今天天气不错。", PublishTime: 3},
+	})
+	page, err := st.Posts().Page(context.Background(),
+		store.PostFilter{Page: 1, PageSize: 10, Keyword: "图床", Aliases: []string{"R2"}},
+		time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Count != 2 {
+		t.Fatalf("应命中 a(原词) + b(别名)，实际 %d：%+v", page.Count, page.Items)
+	}
+	for _, p := range page.Items {
+		if p.Slug == "c" {
+			t.Error("无关文章不该命中")
+		}
+	}
+}

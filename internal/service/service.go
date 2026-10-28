@@ -76,11 +76,23 @@ type PostService struct {
 	site       *SiteService              // 内容变更后 touch 站点更新时间；可为 nil（测试）
 }
 
+// aliasesFor 查配置里为该查询词配的别名（先按原样、再按小写）。
+func aliasesFor(cfg *config.Config, keyword string) []string {
+	if a := cfg.Search.Synonyms[keyword]; len(a) > 0 {
+		return a
+	}
+	return cfg.Search.Synonyms[strings.ToLower(keyword)]
+}
+
 // List 带业务校验的列表查询：
 //   - pageSize=full 有 300 条硬上限——先 count（countOnly 语义），超限报
 //     validation.invalid_field（文案里带上真实条数，告诉用户怎么改）；
 //   - 搜索命中时标题命中排在正文命中之前（页内排序，见 SearchBoost）。
 func (s *PostService) List(ctx context.Context, f store.PostFilter) (store.Page[model.Post], error) {
+	// 同义词展开：查配置里为该词配的别名，交给存储层做 OR 匹配（原词结果优先）
+	if f.Keyword != "" && !f.TitleOnly {
+		f.Aliases = aliasesFor(s.cfg, f.Keyword)
+	}
 	// CountOnly 时不拦 full：纯计数很轻，契约只限制「拉条目」的 full
 	if f.Full && !f.CountOnly {
 		count, err := s.posts.Page(ctx, store.PostFilter{
