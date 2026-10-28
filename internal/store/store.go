@@ -18,6 +18,7 @@ type Store interface {
 	Applications() ApplicationRepository
 	Users() UserRepository
 	Sites() SiteRepository
+	Embeddings() EmbeddingRepository
 
 	Ping(ctx context.Context) error
 	Close(ctx context.Context) error

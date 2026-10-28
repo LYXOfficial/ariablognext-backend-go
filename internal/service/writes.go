@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -86,6 +87,13 @@ func (s *PostService) DeletePost(ctx context.Context, slug string) (map[string]a
 	}
 	if _, err := s.posts.Delete(ctx, slug); err != nil {
 		return nil, err
+	}
+	// 级联清向量：失败不阻塞删除（向量残留的后果只是语义搜索多一条
+	// 「查无此文」的孤儿，检索端会跳过），记日志供回填时发现
+	if s.embeddings != nil {
+		if _, err := s.embeddings.DeleteBySlug(ctx, slug); err != nil {
+			slog.Warn("清理文章向量失败（文章已删除）", "slug", slug, "err", err)
+		}
 	}
 	return map[string]any{"deleted": true}, nil
 }

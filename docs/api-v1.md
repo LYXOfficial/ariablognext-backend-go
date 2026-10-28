@@ -100,7 +100,7 @@
 | `image.unsupported_type` | 415 | 不是受支持的图片格式 |
 | `image.too_large` | 413 | 超过体积上限 |
 | `image.unreachable` | 502 | 对方站点下载失败/超时/不是图片 |
-| `search.not_implemented` | 501 | 语义搜索预留位 |
+| `search.not_implemented` | 501 | 语义搜索预留位（v1.0.2 起 `/posts/semantic` 不再返回 501，码位保留） |
 | `storage.read_only` | 503 | 只读模式（生产只读验证），写接口一律拒绝 |
 | `rate_limit.exceeded` | 429 | 触发限流，带 `Retry-After`（秒） |
 | `timeout.exceeded` | 504 | 服务端处理超时 |
@@ -378,16 +378,27 @@ GET /posts/list?keyword=fiber&titleOnly=true
 
 #### `GET /posts/semantic`
 
-语义搜索预留位。**本版本恒定 501**，先占契约避免日后改路由。
+语义搜索（2026-10-28 落地，bge-m3 + 混合检索）。
 
-- 鉴权：公开
+- 鉴权：公开 ｜ 上游：SiliconFlow embeddings（`features.semanticSearch=true` 时）
 
 | 参数 | 位置 | 类型 | 必填 | 说明 |
 |---|---|---|---|---|
-| `query` | query | string | 否 | 自然语言查询 |
-| `limit` | query | int | 否 | 默认 6 |
+| `query` | query | string | 是 | 自然语言或关键词均可 |
 
-**响应**：501 `{"code":"search.not_implemented","message":"语义搜索还没做，先用关键词搜索"}`。
+**行为按服务端开关自动分流，调用方无需感知**：
+
+| `features.semanticSearch` | 行为 |
+|---|---|
+| `true`（且向量已回填） | 语义召回（余弦 ≥ `minScore`）∪ 关键词召回，RRF 融合排序 |
+| `false` / 向量化失败 | 自动降级为**纯关键词搜索**（与 `GET /posts/list?keyword=` 同源同序） |
+
+**响应**：`data=[{slug,title,bannerImg,publishTime,context,score}]`，**不设 limit**——返回全部命中，翻页由前端实现。
+`score` 为 RRF 名次分（`1/(60+rank)`，两模式量纲一致）；`context` 为命中片段（语义命中 = chunk 开头 120 字；关键词命中 = searchText 定位片段），前端高亮逻辑对不含字面 query 的片段自动降级为无高亮。
+
+**防「硬匹」**：语义侧余弦低于阈值（默认 0.52，实测校准：真相关 0.53–0.67，无关/硬匹 0.36–0.51）不进结果；全低于阈值时返回纯关键词结果（可能为空数组）——保留「没有就说没有」。
+
+**错误**：400 `validation.missing_field`（query 为空）。向量库未回填时语义路为空，不报错。
 
 ---
 
@@ -957,5 +968,6 @@ AI 初筛结果回写。调用方：`flink-screening` GitHub Actions workflow。
 
 | 日期 | 版本 | 变更 |
 |---|---|---|
+| 2026-10-28 | v1.0.2 | `/posts/semantic` 落地：bge-m3 向量 + RRF 混合检索，关闭时回退关键词；不再返回 501；`maxPageSize` 语义端点不限个数 |
 | 2026-10-28 | v1.0.1 | 文档重写为逐接口规格（参数表/响应/错误码/备注）；无接口行为变更 |
 | 2026-10-27 | v1.0 | 首个正式版：56 条路由（含 `/status`）；`maxPageSize` 100→200 |

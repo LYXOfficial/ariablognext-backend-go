@@ -70,10 +70,10 @@ func TestPostsReadHandlers(t *testing.T) {
 	if status != 502 || obj["error"].(map[string]any)["code"] != "upstream.failed" {
 		t.Errorf("未启用摘要应 502：%d %v", status, obj)
 	}
-	// semantic stub
+	// semantic：开关关闭 = 关键词回退（不再是 501），空库 → data 空数组
 	status, obj = do(t, a, "GET", "/posts/semantic?query=x")
-	if status != 501 || obj["error"].(map[string]any)["code"] != "search.not_implemented" {
-		t.Errorf("semantic 应 501：%d %v", status, obj)
+	if status != 200 || obj["ok"] != true {
+		t.Errorf("semantic 关闭时应回退关键词搜索 200：%d %v", status, obj)
 	}
 	// withContent=true 时列表带 mdContent
 	status, obj = do(t, a, "GET", "/posts/list?withContent=true")

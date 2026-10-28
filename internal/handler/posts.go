@@ -186,7 +186,16 @@ func postsSummaryRefresh(svc *service.Set) app.Handler {
 	}
 }
 
-// postsSemanticStub：GET /posts/semantic 固定 501（契约预留位，避免以后改契约）。
-func postsSemanticStub(c *app.Ctx) (any, error) {
-	return nil, apperr.New(apperr.SearchNotImplemented, "语义搜索还没做，先用关键词搜索", nil)
+// postsSemantic：GET /posts/semantic。
+// features.semanticSearch 开 → 语义+关键词 RRF 混合；关 → 服务层自动回退
+// 纯关键词搜索（同 /posts/list?keyword= 的排序），调用方无感、永不再见 501。
+// 不设 limit：返回全部命中，翻页是前端的事（2026-10-28 用户定）。
+func postsSemantic(cfg *config.Config, svc *service.Set) app.Handler {
+	return func(c *app.Ctx) (any, error) {
+		query, err := c.RequiredQuery("query")
+		if err != nil {
+			return nil, err
+		}
+		return svc.Semantic.Search(c.Context(), query)
+	}
 }

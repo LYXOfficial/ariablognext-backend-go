@@ -166,18 +166,24 @@ ai:
     cooldown: 10m
 
   embedding:
-    # 语义搜索的预留位，现在不实现：/posts/semantic 固定返回 501
-    # 以后启用了再填 provider/model/apiKey，并跑 cmd/build-embeddings
-    enabled: false
-    provider: ""
-    model: ""
-    apiKey: "{{ env.EMBEDDING_API_KEY }}"
-
+    # 语义搜索（SiliconFlow bge-m3，有免费额度）。启用三步：
+    # ① .env 填 EMBEDDING_API_KEY ② features.semanticSearch 改 true ③ go run ./cmd/build-embeddings 回填
+    # 未启用时 /posts/semantic 自动回退关键词搜索，调用方无感
+    enabled: true
+    provider: siliconflow
+    endpoint: https://api.siliconflow.cn/v1/embeddings
+    model: BAAI/bge-m3
+    dim: 1024
+    # 余弦阈值：低于它不进结果。实测校准（2026-10-28，83 篇）：真相关 0.53-0.67，
+    # 无关/硬匹 0.36-0.51（如「演唱会门票」0.508 命中公交换乘题）→ 0.52 恰好分开
+    minScore: 0.52
+    timeout: 15s
+    apiKey: "{{ env.SF_TOKEN }}"
 features:
   # 全库导出（外部备份 Action 依赖），保持开启
   export: true
   # 语义搜索，与 ai.embedding.enabled 联动：都为 true 才会真的干活
-  semanticSearch: false
+  semanticSearch: true
 
 # ------------------------------------------------------------
 # 唯一允许直接读的环境变量：CONFIG_FILE

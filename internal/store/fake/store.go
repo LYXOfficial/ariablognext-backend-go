@@ -27,6 +27,7 @@ type Store struct {
 	applications []model.LinkApplication
 	users        []fakeUser
 	siteInfo     map[string]int64
+	embeddings   map[string]store.EmbeddingDoc
 	nextID       int
 	closed       bool
 }
@@ -45,8 +46,9 @@ type summaryEntry struct {
 
 func New() *Store {
 	return &Store{
-		summaries: map[string]summaryEntry{},
-		siteInfo:  map[string]int64{},
+		summaries:  map[string]summaryEntry{},
+		siteInfo:   map[string]int64{},
+		embeddings: map[string]store.EmbeddingDoc{},
 	}
 }
 
@@ -134,13 +136,14 @@ func (r postRepo) Page(ctx context.Context, f store.PostFilter, loc *time.Locati
 			continue
 		}
 		if kws := splitKeywords(f.Keyword); len(kws) > 0 {
-			// 与 mongo 实现同一语义：空格分隔多关键词、AND、按「剥离 Markdown 后的全文」匹配。
-			// 不能用 plainContent（库里截断到 201 字，正文中段会搜不到）；
-			// 也不能直接匹配 mdContent（会命中 <Folding> 这类结构标记）。
+			// 与 mongo 实现同一语义：空格分隔多关键词、AND、大小写不敏感（$options:"i"）、
+			// 按「剥离 Markdown 后的全文」匹配。不能用 plainContent（库里截断到 201 字，
+			// 正文中段会搜不到）；也不能直接匹配 mdContent（会命中 <Folding> 这类结构标记）。
 			title := strings.ToLower(p.Title)
 			text := textutil.BuildSearchText(p.Title, p.MdContent)
 			matched := true
 			for _, kw := range kws {
+				kw = strings.ToLower(kw) // mongo 是 $options:"i"，fake 必须同语义
 				if f.TitleOnly {
 					if !strings.Contains(title, kw) {
 						matched = false

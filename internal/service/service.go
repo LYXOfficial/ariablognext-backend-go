@@ -26,6 +26,7 @@ type Set struct {
 	Login        *LoginService
 	Applications *ApplicationService
 	Status       *StatusService
+	Semantic     *SemanticService
 }
 
 // NewSet 组装全部服务。deps 全部显式传入。
@@ -33,9 +34,10 @@ func NewSet(cfg *config.Config, st store.Store) *Set {
 	return &Set{
 		Posts: &PostService{
 			cfg: cfg, posts: st.Posts(),
-			taxonomy:  st.Posts().(store.TaxonomyRepository),
-			summaries: st.Summaries(),
-			llm:       platform.NewLLM(cfg.AI.Summary),
+			taxonomy:   st.Posts().(store.TaxonomyRepository),
+			summaries:  st.Summaries(),
+			llm:        platform.NewLLM(cfg.AI.Summary),
+			embeddings: st.Embeddings(),
 		},
 		Drafts: &DraftService{drafts: st.Drafts()},
 		Speaks: &SpeakService{cfg: cfg, speaks: st.Speaks()},
@@ -48,6 +50,7 @@ func NewSet(cfg *config.Config, st store.Store) *Set {
 		},
 		Applications: NewApplicationService(cfg, st),
 		Status:       NewStatusService(cfg, st),
+		Semantic:     NewSemanticService(cfg, st.Posts(), st.Embeddings(), platform.NewEmbedder(cfg.AI.Embedding)),
 		Login:        nil, // main 里在 app.New 之后补（需要 JWT 签发器）
 	}
 }
@@ -59,11 +62,12 @@ func (s *Set) AttachLogin(users store.UserRepository, jwt *auth.JWT) {
 
 // PostService：文章相关业务。
 type PostService struct {
-	cfg       *config.Config
-	posts     store.PostRepository
-	taxonomy  store.TaxonomyRepository
-	summaries store.SummaryRepository
-	llm       *platform.LLM
+	cfg        *config.Config
+	posts      store.PostRepository
+	taxonomy   store.TaxonomyRepository
+	summaries  store.SummaryRepository
+	llm        *platform.LLM
+	embeddings store.EmbeddingRepository // 删文章时级联清向量；可为 nil（测试）
 }
 
 // List 带业务校验的列表查询：

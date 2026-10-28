@@ -47,6 +47,14 @@ type PostBrief struct {
 	Context     *string `bson:"-" json:"context,omitempty"`
 }
 
+// Brief 抽出瘦身版。Context 原样带过去（搜索命中时由仓储填充）。
+func (p *Post) Brief() PostBrief {
+	return PostBrief{
+		Slug: p.Slug, Title: p.Title, BannerImg: p.BannerImg,
+		PublishTime: p.PublishTime, Context: p.Context,
+	}
+}
+
 // PostMeta 是文章元信息里可被后台单独修改的部分。
 // 指针字段 = 「没传就不动」，让 PUT /posts/update 做局部更新。
 type PostMeta struct {

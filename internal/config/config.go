@@ -196,10 +196,14 @@ type SummaryConfig struct {
 }
 
 type EmbeddingConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Provider string `yaml:"provider"`
-	Model    string `yaml:"model"`
-	APIKey   string `yaml:"apiKey" secret:"true"`
+	Enabled  bool     `yaml:"enabled"`
+	Provider string   `yaml:"provider"`
+	Endpoint string   `yaml:"endpoint"`
+	Model    string   `yaml:"model"`
+	APIKey   string   `yaml:"apiKey" secret:"true"`
+	Dim      int      `yaml:"dim"`
+	Timeout  Duration `yaml:"timeout"`
+	MinScore float32  `yaml:"minScore"`
 }
 
 type FeaturesConfig struct {
@@ -420,6 +424,12 @@ func (c *Config) Validate() error {
 	if c.Mail.Enabled {
 		if c.Mail.Host == "" || c.Mail.Port == "" || c.Mail.User == "" || c.Mail.Pass == "" || c.Mail.From == "" {
 			addf("mail.enabled=true 但 SMTP 配置不全（host/port/user/pass/from 都必须非空）")
+		}
+	}
+	if c.AI.Embedding.Enabled {
+		v := c.AI.Embedding
+		if v.Endpoint == "" || v.Model == "" || v.APIKey == "" || v.Dim <= 0 {
+			addf("ai.embedding.enabled=true 但 endpoint/model/apiKey/dim 必须全部配置")
 		}
 	}
 	if c.Flink.Screening.Enabled {

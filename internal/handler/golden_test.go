@@ -81,7 +81,7 @@ func TestGolden(t *testing.T) {
 		{name: "links-list", method: "GET", path: "/links/list"},
 		{name: "speaks-list", method: "GET", path: "/speaks/list?pageSize=1"},
 		{name: "site-info", method: "GET", path: "/site/info"},
-		{name: "semantic-stub", method: "GET", path: "/posts/semantic?query=x"},
+		{name: "semantic-fallback", method: "GET", path: "/posts/semantic?query=x"},
 		{name: "not-found", method: "GET", path: "/nope"},
 		{name: "error-missing-param", method: "GET", path: "/posts/detail"},
 	}

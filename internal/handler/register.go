@@ -23,7 +23,7 @@ func Register(a *app.App, cfg *config.Config, st store.Store, svc *service.Set, 
 		{Method: "GET", Path: "/posts/navigation", Auth: app.Public, Handler: postsNavigation(svc)},
 		{Method: "GET", Path: "/posts/related", Auth: app.Public, Handler: postsRelated(svc)},
 		{Method: "GET", Path: "/posts/summary", Auth: app.Public, Handler: postsSummaryGet(svc)},
-		{Method: "GET", Path: "/posts/semantic", Auth: app.Public, Handler: postsSemanticStub},
+		{Method: "GET", Path: "/posts/semantic", Auth: app.Public, Handler: postsSemantic(cfg, svc)},
 		// 分类 / 标签 / 归档
 		{Method: "GET", Path: "/tags/list", Auth: app.Public, Handler: tagsList(svc)},
 		{Method: "GET", Path: "/categories/list", Auth: app.Public, Handler: categoriesList(svc)},

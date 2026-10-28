@@ -348,3 +348,20 @@ func Open(ctx context.Context, cfg *config.Config) (Store, error) {
 
 加新数据库时只需要：新建 `internal/store/pgstore`，实现上面的接口，在这里加一个 `case`。
 **任何情况下都不许为了适配新库去改接口**——改接口说明抽象没做对。
+
+
+## EmbeddingRepository（2026-10-28 增补）
+
+语义搜索的向量存储，单开 `PostEmbeddings` 集合（不进 Posts 主文档——列表投影零改动）。
+
+```go
+type EmbeddingRepository interface {
+	Upsert(ctx context.Context, doc EmbeddingDoc) error          // slug 为 _id，整体替换
+	DeleteBySlug(ctx context.Context, slug string) (bool, error) // 幂等
+	ListAll(ctx context.Context) ([]EmbeddingDoc, error)         // 全量，service 层有 5min TTL 缓存
+}
+```
+
+> 注：design-notes §2.6 原预留 `SemanticSearcher`（store 内做检索），
+> 实现时改为 service 层内存暴力余弦 + RRF——83 篇规模下更简单且精度相同，
+> 接口面也更小。换 Atlas Vector Search 时再把检索下沉回 store。
