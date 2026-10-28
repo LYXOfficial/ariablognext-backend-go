@@ -194,6 +194,10 @@ type SummaryConfig struct {
 	APIKey   string   `yaml:"apiKey" secret:"true"`
 	Timeout  Duration `yaml:"timeout"`
 	Cooldown Duration `yaml:"cooldown"`
+	// ChunkSize / MaxChunks 是长文分块的参数：每块字符数与最多处理块数。
+	// 分块与合并都用同一段 prompt（不新增任何指令文本）。
+	ChunkSize int `yaml:"chunkSize"`
+	MaxChunks int `yaml:"maxChunks"`
 	// ExtraBody 原样合并进 chat/completions 请求体（覆盖代码里的默认值）。
 	// 用它配置模型专属参数，避免为每个厂商的参数写死分支：
 	//   enable_thinking: false —— Qwen3 默认开思考，一句话要 17-23 秒，

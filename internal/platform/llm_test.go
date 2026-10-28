@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -21,7 +22,7 @@ func TestSummaryPromptMatchesOldBackend(t *testing.T) {
 
 // 请求体形状与旧后端一致：单条 user 消息、没有 system 消息。
 func TestChatBodyShape(t *testing.T) {
-	llm := NewLLM(config.SummaryConfig{Model: "Qwen/Qwen3-8B"})
+	llm := NewLLM(config.SummaryConfig{Enabled: true, APIKey: "test-key", Model: "Qwen/Qwen3-8B"})
 	body := llm.chatBody("测试正文")
 	msgs, ok := body["messages"].([]map[string]string)
 	if !ok || len(msgs) != 1 {
@@ -44,7 +45,7 @@ func TestChatBodyShape(t *testing.T) {
 // 模型专属参数由配置提供并覆盖/追加（Qwen3 的 enable_thinking=false 就是这样进来的）。
 func TestChatBodyExtraBody(t *testing.T) {
 	llm := NewLLM(config.SummaryConfig{
-		Model:     "Qwen/Qwen3-8B",
+		Enabled: true, APIKey: "test-key", Model: "Qwen/Qwen3-8B",
 		ExtraBody: map[string]any{"enable_thinking": false, "max_tokens": 400},
 	})
 	body := llm.chatBody("测试正文")
@@ -56,10 +57,78 @@ func TestChatBodyExtraBody(t *testing.T) {
 	}
 }
 
-// 生成结果要去掉换行（旧后端 .replace("\n","")）。
+// 分块路径：每一块与最后的合并，都必须使用同一段旧 prompt（不得新增指令文本）。
+func TestChunkingReusesSamePrompt(t *testing.T) {
+	llm := NewLLM(config.SummaryConfig{Enabled: true, APIKey: "test-key", Model: "Qwen/Qwen3-8B", ChunkSize: 1000, MaxChunks: 3})
+	var prompts []string
+	llm.chatHook = func(p string) (string, error) {
+		prompts = append(prompts, p)
+		return "块摘要", nil
+	}
+	// 300 字符 → 至少 4 块（重叠 200 会更多），但只处理 MaxChunks=3 块 + 1 次合并
+	md := strings.Repeat("中", 3000)
+	if _, err := llm.GenerateSummary(context.Background(), "标题不进 prompt", md); err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 4 {
+		t.Fatalf("3 块 + 1 次合并 = 4 次调用，实际 %d", len(prompts))
+	}
+	for i, p := range prompts {
+		if !strings.HasPrefix(p, summaryPromptPrefix) {
+			t.Errorf("第 %d 次调用的 prompt 不以旧 prompt 开头：%q", i+1, p[:40])
+		}
+		// 除 prompt 前缀外只能是正文/块摘要，不能出现新造的指令
+		if strings.Contains(p, "请合并") || strings.Contains(p, "请概括") || strings.Contains(p, "片段") {
+			t.Errorf("第 %d 次调用混入了新造指令：%q", i+1, p[len(summaryPromptPrefix):])
+		}
+		if strings.Contains(p, "标题") {
+			t.Errorf("prompt 不应包含标题（旧后端不传）：%q", p)
+		}
+	}
+	if !strings.HasPrefix(prompts[3], summaryPromptPrefix+"块摘要\n块摘要\n块摘要") {
+		t.Errorf("合并请求应是把各块摘要当正文再喂同一 prompt：%q", prompts[3])
+	}
+}
+
+// 短文只有一块：只调用一次。
+func TestShortArticleSingleCall(t *testing.T) {
+	llm := NewLLM(config.SummaryConfig{Enabled: true, APIKey: "test-key", Model: "Qwen/Qwen3-8B"})
+	calls := 0
+	llm.chatHook = func(p string) (string, error) { calls++; return "摘要", nil }
+	if _, err := llm.GenerateSummary(context.Background(), "", "短正文"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Errorf("短文应只调用一次，实际 %d", calls)
+	}
+}
+
+// 换行必须去掉（旧后端 .replace("\n","")）。
 func TestSummaryStripsNewlines(t *testing.T) {
-	got := strings.ReplaceAll("第一行\n第二行\n", "\n", "")
-	if strings.Contains(got, "\n") {
-		t.Errorf("换行应被移除：%q", got)
+	llm := NewLLM(config.SummaryConfig{Enabled: true, APIKey: "test-key", Model: "Qwen/Qwen3-8B"})
+	llm.chatHook = func(string) (string, error) { return "第一行\n第二行", nil }
+	out, err := llm.GenerateSummary(context.Background(), "", "正文")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "\n") {
+		t.Errorf("换行应被移除：%q", out)
+	}
+}
+
+// chunkSize 配得比重叠量还小时不能 panic（配置化之后新增的边界）。
+func TestSplitChunksTinySize(t *testing.T) {
+	for _, size := range []int{0, 1, 10, 200, 201} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("splitChunks(size=%d) panic: %v", size, r)
+				}
+			}()
+			got := splitChunks(strings.Repeat("中", 500), size)
+			if size > 0 && len(got) == 0 {
+				t.Errorf("size=%d 应至少切出一块", size)
+			}
+		}()
 	}
 }
