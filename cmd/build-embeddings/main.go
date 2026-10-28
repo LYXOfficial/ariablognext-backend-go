@@ -19,6 +19,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"log/slog"
 	"os"
@@ -101,6 +103,7 @@ func main() {
 	type pendingChunk struct {
 		slug   string
 		chunks []string
+		hash   string
 		now    int64
 	}
 	var (
@@ -122,7 +125,7 @@ func main() {
 		for _, pc := range batch {
 			doc := store.EmbeddingDoc{
 				Slug: pc.slug, Model: cfg.AI.Embedding.Model,
-				Dim: cfg.AI.Embedding.Dim, UpdatedAt: pc.now,
+				Dim: cfg.AI.Embedding.Dim, TextHash: pc.hash, UpdatedAt: pc.now,
 				Chunks: make([]store.EmbeddingChunk, 0, len(pc.chunks)),
 			}
 			for i, text := range pc.chunks {
@@ -144,16 +147,21 @@ func main() {
 	}
 
 	for _, p := range posts.Items {
-		if old, ok := existing[p.Slug]; ok && !*force &&
-			old.Model == cfg.AI.Embedding.Model && old.Dim == cfg.AI.Embedding.Dim &&
-			old.UpdatedAt >= p.LastUpdatedTime {
-			skipped++
-			continue
-		}
 		// 用 searchText 做嵌入文本：标题+正文纯文本、小写、去 Markdown——
 		// 与关键词搜索同一份数据，两条召回路看到的文本一致
 		text := textutil.BuildSearchText(p.Title, p.MdContent)
 		if text == "" {
+			skipped++
+			continue
+		}
+		// 增量判定键 = 嵌入源文本的 hash：新增/改文/换模型三种变化都会被捕捉到。
+		// 不比对 lastUpdatedTime：只改正文的接口不刷新它（后台是另调 updatePostInfo
+		// 补的），比对它等于把新鲜度寄托在前端调用顺序上
+		sum := sha256.Sum256([]byte(text))
+		textHash := hex.EncodeToString(sum[:])[:16]
+		if old, ok := existing[p.Slug]; ok && !*force &&
+			old.Model == cfg.AI.Embedding.Model && old.Dim == cfg.AI.Embedding.Dim &&
+			old.TextHash == textHash {
 			skipped++
 			continue
 		}
@@ -168,7 +176,7 @@ func main() {
 			chunks = append(chunks, string(r[i*chunkSize:end]))
 		}
 		batchTexts = append(batchTexts, chunks...)
-		batch = append(batch, pendingChunk{slug: p.Slug, chunks: chunks, now: now})
+		batch = append(batch, pendingChunk{slug: p.Slug, chunks: chunks, hash: textHash, now: now})
 		if len(batchTexts) >= embedBatch {
 			if err := flush(); err != nil {
 				slog.Error("批量向量化失败，中断（已完成的保留，重跑即可续传）", "done", done, "err", err)

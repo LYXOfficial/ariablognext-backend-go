@@ -8,6 +8,8 @@ import (
 
 	"github.com/LYXOfficial/ariablognext-backend-go/internal/model"
 	"github.com/LYXOfficial/ariablognext-backend-go/internal/store"
+	"github.com/LYXOfficial/ariablognext-backend-go/internal/store/fake"
+	"github.com/LYXOfficial/ariablognext-backend-go/internal/textutil"
 )
 
 // 写接口与申请全流程测试（fake 存储）。
@@ -523,4 +525,110 @@ func itoaT(n int) string {
 		n /= 10
 	}
 	return string(buf)
+}
+
+// 标题变更必须连带重算 searchText：否则关键词索引停在旧标题，
+// 改完标题搜不到新标题（2026-10-28 修复的回归钉）。
+func TestUpdatePostMetaTitleRefreshesSearchText(t *testing.T) {
+	cfg := serviceConfig()
+	st := fake.New()
+	svc := NewSet(cfg, st)
+	st.SetPosts([]model.Post{
+		{Slug: "a", Title: "旧标题", Category: "随笔", MdContent: "正文内容", PublishTime: 100,
+			SearchText: textutil.BuildSearchText("旧标题", "正文内容")},
+	})
+	if err := svc.Posts.UpdatePostMeta(context.Background(), "a",
+		model.PostMeta{Title: ptrStr("新标题.txt")}); err != nil {
+		t.Fatalf("更新失败: %v", err)
+	}
+	res, err := svc.Posts.List(context.Background(), store.PostFilter{Page: 1, Keyword: "新标题", PageSize: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Items) != 1 || res.Items[0].Slug != "a" {
+		t.Errorf("改标题后应能搜到新标题：%+v", res.Items)
+	}
+	res, err = svc.Posts.List(context.Background(), store.PostFilter{Page: 1, Keyword: "旧标题", PageSize: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Items) != 0 {
+		t.Errorf("旧标题索引应已更新：%+v", res.Items)
+	}
+}
+
+func ptrStr(s string) *string { return &s }
+
+// 站点更新时间联动（2026-10-28 用户定论）：
+// 文章/说说/友链的写入要 touch；友链申请「拒绝」不算内容更新，不能 touch。
+func TestContentWritesTouchSiteTime(t *testing.T) {
+	cfg := serviceConfig()
+	st := fake.New()
+	svc := NewSet(cfg, st)
+	ctx := context.Background()
+
+	siteTime := func() int64 {
+		t.Helper()
+		info, err := svc.Sites.Info(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info["latestUpdateTime"].(int64)
+	}
+	resetTo := func(v int64) { st.SetSiteInfo(map[string]int64{"latestUpdateTime": v}) }
+
+	// 文章：create → content → delete 各刷一次
+	if _, err := svc.Posts.CreatePost(ctx, model.Post{Slug: "a", Title: "标题", PublishTime: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if siteTime() <= 100 {
+		t.Fatalf("create 后站点时间应更新，得到 %d", siteTime())
+	}
+	resetTo(100)
+	if _, err := svc.Posts.UpdatePostContent(ctx, "a", "正文"); err != nil {
+		t.Fatal(err)
+	}
+	if siteTime() <= 100 {
+		t.Fatal("改正文后站点时间应更新")
+	}
+	resetTo(100)
+	if _, err := svc.Posts.DeletePost(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if siteTime() <= 100 {
+		t.Fatal("删文章后站点时间应更新")
+	}
+
+	// 说说：create 也要刷
+	resetTo(100)
+	if err := svc.Speaks.CreateSpeak(ctx, "一条说说", nil); err != nil {
+		t.Fatal(err)
+	}
+	if siteTime() <= 100 {
+		t.Fatal("发说说过后站点时间应更新")
+	}
+}
+
+// 申请被拒绝 = 站点内容没变 → 不 touch。
+func TestRejectedApplicationDoesNotTouchSite(t *testing.T) {
+	cfg := serviceConfig()
+	st := fake.New()
+	svc := NewSet(cfg, st)
+	ctx := context.Background()
+
+	id, err := st.Applications().Create(ctx, model.LinkApplication{
+		Name: "某站", Link: "https://x.example", Email: "a@b.c",
+		Status: model.ApplicationStatusPending, Type: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.SetSiteInfo(map[string]int64{"latestUpdateTime": 100})
+	if _, err := svc.Links.DecideApplication(ctx, id, model.ApplicationStatusRejected, "", "理由", nil); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := svc.Sites.Info(ctx)
+	if got := info["latestUpdateTime"].(int64); got != 100 {
+		t.Errorf("拒绝申请不应 touch 站点时间，期望 100 得到 %d", got)
+	}
 }

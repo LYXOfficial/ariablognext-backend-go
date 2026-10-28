@@ -169,9 +169,10 @@ type FlinkConfig struct {
 }
 
 type ScreeningConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Repo    string `yaml:"repo"`
-	Token   string `yaml:"token" secret:"true"`
+	Enabled   bool   `yaml:"enabled"`
+	Repo      string `yaml:"repo"`      // workflow 所在仓库（现在就是本仓库）
+	EventType string `yaml:"eventType"` // 必须与 workflow 的 on.repository_dispatch.types 一致
+	Token     string `yaml:"token" secret:"true"`
 }
 
 type LatencyCheckConfig struct {
@@ -433,8 +434,8 @@ func (c *Config) Validate() error {
 		}
 	}
 	if c.Flink.Screening.Enabled {
-		if c.Flink.Screening.Repo == "" || c.Flink.Screening.Token == "" {
-			addf("flink.screening.enabled=true 但 repo/token 有空值")
+		if c.Flink.Screening.Repo == "" || c.Flink.Screening.Token == "" || c.Flink.Screening.EventType == "" {
+			addf("flink.screening.enabled=true 但 repo/eventType/token 有空值")
 		}
 	}
 	if c.Flink.LatencyCheck.Enabled && c.Flink.LatencyCheck.Token == "" {

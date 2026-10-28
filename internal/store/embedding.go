@@ -18,9 +18,14 @@ type EmbeddingChunk struct {
 // upsert 天然幂等；文章删除时按 slug 级联清理。
 // Model/Dim 用于换模型检测：与配置不一致的文档由 build-embeddings 重算。
 type EmbeddingDoc struct {
-	Slug      string           `bson:"_id" json:"slug"`
-	Model     string           `bson:"model" json:"model"`
-	Dim       int              `bson:"dim" json:"dim"`
+	Slug  string `bson:"_id" json:"slug"`
+	Model string `bson:"model" json:"model"`
+	Dim   int    `bson:"dim" json:"dim"`
+	// TextHash 是嵌入源文本（searchText）的 sha256 前 16 位：增量回填的判定键。
+	// 不用 lastUpdatedTime：只改正文的接口（PUT /posts/content）不会刷新它，
+	// 是后台保存流程紧接着调 updatePostInfo 才补上的——用 hash 就不依赖这个约定，
+	// 任何调用方（脚本/直接调 API）改完正文都能被下一次回填发现。
+	TextHash  string           `bson:"textHash" json:"textHash"`
 	UpdatedAt int64            `bson:"updatedAt" json:"updatedAt"`
 	Chunks    []EmbeddingChunk `bson:"chunks" json:"chunks"`
 }

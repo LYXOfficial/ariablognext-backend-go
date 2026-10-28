@@ -1,0 +1,57 @@
+# 语义搜索向量回填（定时增量）：跑 cmd/build-embeddings。
+#
+# 为什么单独一个 workflow：新增/改文后向量不会即时更新（写路径不内联向量化），
+# 靠这里每 6 小时增量补齐。判定键是 searchText 的 sha256——只有新增/改文/换模型
+# 的篇目会重算（83 篇全量约 9s，增量通常秒级），结果写 PostEmbeddings 集合，
+# 不碰其它集合。用户手动改完文章想立刻生效，本地跑一次 `go run ./cmd/build-embeddings` 也行。
+#
+# 仓库 Settings 需要：Secret: MONGODB_URI / DB_NAME / SECRET / SF_TOKEN（+ S3/SMTP/GH 等
+# config.yml 引用的其余变量，Go 版约定「变量未定义 = 启动失败」）
+# ⚠️ Atlas 若开了 IP 白名单，需要放行 GitHub Actions（或 0.0.0.0/0）。
+
+name: Build Embeddings (scheduled backfill)
+
+on:
+  schedule:
+    - cron: "37 */6 * * *" # 每 6 小时；错开整点（备份/朋友圈爬取都在整点附近）
+  workflow_dispatch:
+
+concurrency:
+  group: build-embeddings
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # 直接用主配置：ai.embedding.enabled 已经是 true（语义搜索上线后），
+      # 命令只依赖 embedding 一段配置，无需额外配置文件
+      - name: Run incremental backfill
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          SECRET: ${{ secrets.SECRET }}
+          SF_TOKEN: ${{ secrets.SF_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
+          S3_ACCESSKEYID: ${{ secrets.S3_ACCESSKEYID }}
+          S3_SECRETACCESSKEY: ${{ secrets.S3_SECRETACCESSKEY }}
+          S3_REGION: ${{ secrets.S3_REGION }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_PUBLIC_URL: ${{ secrets.S3_PUBLIC_URL }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_SECURE: ${{ secrets.SMTP_SECURE }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          FLINK_ADMIN_EMAIL: ${{ secrets.FLINK_ADMIN_EMAIL }}
+        run: go run ./cmd/build-embeddings

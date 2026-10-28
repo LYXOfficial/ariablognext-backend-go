@@ -141,10 +141,17 @@ flink:
   retentionDays: 14 # 审核结果保留天数
   adminEmail: "{{ env.FLINK_ADMIN_EMAIL }}"
 
-  # AI 初筛：申请入库后触发 GitHub Actions 抓站分析，结论回写本服务
+  # AI 初筛：申请入库后触发 GitHub Actions 抓站分析，结论回写本服务。
+  # workflow 就在本仓库（.github/workflows/flink-screening.yml）：
+  #   - repo 必须指向本仓库，否则 dispatch 打到的仓库里没有这个 workflow
+  #   - eventType 必须与 workflow 的 on.repository_dispatch.types 逐字一致
   screening:
     enabled: true
-    repo: "{{ env.GITHUB_REPO }}"
+    # workflow 就在本仓库（.github/workflows/flink-screening.yml）：
+    # 不读 GITHUB_REPO 环境变量——配错了会静默 dispatch 到别的仓库，不如写死。
+    # 仓库改名 / fork 时改这里。
+    repo: LYXOfficial/ariablognext-backend-go
+    eventType: flink-screening
     token: "{{ env.GH_TOKEN }}"
 
   # 链路延迟检查：手动触发外部 check-flink 仓库的 workflow
@@ -167,7 +174,7 @@ ai:
 
   embedding:
     # 语义搜索（SiliconFlow bge-m3，有免费额度）。启用三步：
-    # ① .env 填 EMBEDDING_API_KEY ② features.semanticSearch 改 true ③ go run ./cmd/build-embeddings 回填
+    # ① .env 配 SF_TOKEN（复用摘要的 SiliconFlow key）② features.semanticSearch 改 true ③ go run ./cmd/build-embeddings 回填
     # 未启用时 /posts/semantic 自动回退关键词搜索，调用方无感
     enabled: true
     provider: siliconflow

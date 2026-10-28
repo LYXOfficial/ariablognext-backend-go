@@ -4,6 +4,8 @@ package service
 
 import (
 	"context"
+	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +33,7 @@ type Set struct {
 
 // NewSet 组装全部服务。deps 全部显式传入。
 func NewSet(cfg *config.Config, st store.Store) *Set {
+	sites := &SiteService{cfg: cfg, sites: st.Sites()}
 	return &Set{
 		Posts: &PostService{
 			cfg: cfg, posts: st.Posts(),
@@ -38,15 +41,17 @@ func NewSet(cfg *config.Config, st store.Store) *Set {
 			summaries:  st.Summaries(),
 			llm:        platform.NewLLM(cfg.AI.Summary),
 			embeddings: st.Embeddings(),
+			site:       sites,
 		},
 		Drafts: &DraftService{drafts: st.Drafts()},
-		Speaks: &SpeakService{cfg: cfg, speaks: st.Speaks()},
-		Sites:  &SiteService{sites: st.Sites()},
+		Speaks: &SpeakService{cfg: cfg, speaks: st.Speaks(), site: sites},
+		Sites:  sites,
 		Links: &LinkService{
 			cfg: cfg, links: st.Links(), apps: st.Applications(), theme: NewThemeService(),
 			// 审批通知邮件依赖（P3）：模板与 SMTP 客户端
 			templates: platform.NewMailTemplates(cfg.Site, cfg.Flink),
 			mailer:    platform.NewMailer(cfg.Mail),
+			site:      sites,
 		},
 		Applications: NewApplicationService(cfg, st),
 		Status:       NewStatusService(cfg, st),
@@ -68,6 +73,7 @@ type PostService struct {
 	summaries  store.SummaryRepository
 	llm        *platform.LLM
 	embeddings store.EmbeddingRepository // 删文章时级联清向量；可为 nil（测试）
+	site       *SiteService              // 内容变更后 touch 站点更新时间；可为 nil（测试）
 }
 
 // List 带业务校验的列表查询：
@@ -214,6 +220,7 @@ func (s *PostService) Archives(ctx context.Context) ([]model.ArchiveBucket, erro
 type SpeakService struct {
 	cfg    *config.Config
 	speaks store.SpeakRepository
+	site   *SiteService
 }
 
 func (s *SpeakService) List(ctx context.Context, f store.ListFilter) (store.Page[model.Speak], error) {
@@ -221,10 +228,14 @@ func (s *SpeakService) List(ctx context.Context, f store.ListFilter) (store.Page
 }
 
 // SiteService：站点信息。
-// ⚠️ 语义修正（用户定论）：latestUpdateTime 只由胶水层写入——
-// 旧链路「后端写时间戳 + 顺带 GET blog/refreshCache/siteinfo 通知刷缓存」的
-// 耦合要删除，刷新缓存由 dashboard 单独请求。新接口支持自定义时间戳，缺省取当前时间。
+// latestUpdateTime 的写入来源（2026-10-28 用户定论）：
+//   - 自动：站点内容变更后由 service 层 touch（文章/说说/友链的增删改、友链审批通过）。
+//     图床操作、友链申请提交**不算**内容更新，不 touch；
+//   - 手动：POST /site/update-time 仍保留（胶水旧契约 + 需要改历史时间时用）。
+//
+// refreshCache 通知仍只留在胶水层（旧契约的义务），本服务只写时间戳。
 type SiteService struct {
+	cfg   *config.Config
 	sites store.SiteRepository
 }
 
@@ -235,6 +246,39 @@ func (s *SiteService) Info(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	return map[string]any{"latestUpdateTime": t}, nil
+}
+
+// Touch 把 latestUpdateTime 刷成当前时间，并 fire-and-forget 通知博客站刷
+// 站点信息缓存。内容写入成功后由 service 层调用；失败由调用方记日志
+// （不能让「更新时间没写成」把用户的内容保存搞失败）。
+//
+// 为什么通知放在这里：dashboard 不再手动触发更新，旧链路「glue 转发时顺带
+// 通知 refreshCache」就没人走了；把通知挪到「真正写时间的地方」，任何客户端
+// 改内容都会顺带刷博客缓存。
+func (s *SiteService) Touch(ctx context.Context) (int64, error) {
+	t, err := s.sites.SetNow(ctx, "latestUpdateTime")
+	if err != nil {
+		return 0, err
+	}
+	if s.cfg != nil && s.cfg.Site.RefreshURL != "" {
+		url := strings.TrimRight(s.cfg.Site.RefreshURL, "/") + "/siteinfo"
+		go func() {
+			// 独立超时：博客侧抖动绝不能拖慢/搞挂后台的保存动作
+			reqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+			if err != nil {
+				return
+			}
+			resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+			if err != nil {
+				slog.Debug("通知博客刷站点缓存失败（忽略）", "url", url, "err", err)
+				return
+			}
+			_ = resp.Body.Close()
+		}()
+	}
+	return t, nil
 }
 
 // UpdateTime 写入时间戳并返回写入值。
@@ -263,6 +307,7 @@ type LinkService struct {
 	// 邮件依赖（审批通知用）
 	templates *platform.MailTemplates
 	mailer    *platform.Mailer
+	site      *SiteService // 友链/审批变更后 touch 站点更新时间
 }
 
 // List 友链分组列表；meta.count 是友链条目总数（不是分组数）。

@@ -33,13 +33,24 @@ func (s *PostService) CreatePost(ctx context.Context, p model.Post) (map[string]
 		}
 		return nil, err
 	}
+	touchSite(ctx, s.site)
 	return map[string]any{"slug": p.Slug}, nil
 }
 
 // UpdatePostMeta 局部更新元信息。
+// 标题参与 searchText：改标题必须连带重算，否则关键词索引停留在旧标题
+// （2026-10-28 修复：此前只 $set 元字段，改完标题搜不到新标题）。
 func (s *PostService) UpdatePostMeta(ctx context.Context, slug string, m model.PostMeta) error {
 	if slug == "" {
 		return apperr.New(apperr.ValidationMissingField, "缺少 slug", fieldDetail("slug", "必填"))
+	}
+	if m.Title != nil {
+		if err := s.refreshSearchText(ctx, slug, *m.Title); err != nil {
+			if err == store.ErrNotFound {
+				return apperr.New(apperr.PostNotFound, "文章不存在或已被删除", nil)
+			}
+			return err
+		}
 	}
 	if err := s.posts.UpdateMeta(ctx, slug, m); err != nil {
 		if err == store.ErrNotFound {
@@ -47,7 +58,24 @@ func (s *PostService) UpdatePostMeta(ctx context.Context, slug string, m model.P
 		}
 		return err
 	}
+	touchSite(ctx, s.site)
 	return nil
+}
+
+// refreshSearchText 用新标题 + 当前正文重建 searchText（借道 UpdateContent：
+// 仓储只有这一个能写 searchText 的口子，markdown/plain/wordCount 原样回写）。
+func (s *PostService) refreshSearchText(ctx context.Context, slug, newTitle string) error {
+	p, err := s.posts.BySlug(ctx, slug)
+	if err != nil {
+		return err // ErrNotFound 由调用方按 404 语义处理
+	}
+	// wordCount 现算而不是回写旧值：与 UpdatePostContent 同一公式，结果一致
+	return s.posts.UpdateContent(ctx, slug, model.PostContent{
+		Markdown:     p.MdContent,
+		PlainContent: p.PlainContent,
+		SearchText:   textutil.BuildSearchText(newTitle, p.MdContent),
+		WordCount:    textutil.WordCount(p.MdContent),
+	})
 }
 
 // UpdatePostContent 只改正文：服务端重算 wordCount / plainContent / searchText。
@@ -77,6 +105,7 @@ func (s *PostService) UpdatePostContent(ctx context.Context, slug, markdown stri
 	if err != nil {
 		return nil, err
 	}
+	touchSite(ctx, s.site)
 	return map[string]any{"wordCount": wordCount}, nil
 }
 
@@ -95,6 +124,7 @@ func (s *PostService) DeletePost(ctx context.Context, slug string) (map[string]a
 			slog.Warn("清理文章向量失败（文章已删除）", "slug", slug, "err", err)
 		}
 	}
+	touchSite(ctx, s.site)
 	return map[string]any{"deleted": true}, nil
 }
 
@@ -141,6 +171,35 @@ func (s *DraftService) CreateDraft(ctx context.Context, d model.Draft) (map[stri
 func (s *DraftService) UpdateDraftMeta(ctx context.Context, slug string, m model.PostMeta) error {
 	if slug == "" {
 		return apperr.New(apperr.ValidationMissingField, "缺少 slug", fieldDetail("slug", "必填"))
+	}
+	// 与文章同理：标题变 → searchText 重算（草稿的搜索同样吃这个索引）
+	if m.Title != nil {
+		p, err := s.drafts.BySlug(ctx, slug)
+		if err != nil && err != store.ErrNotFound {
+			return err
+		}
+		if err == nil {
+			// 草稿的 md/plain/wordCount 可空（4/8 条存量缺正文），零值回写会
+			// 把 null 伪造成本地旧数据——nil 一律按空串/0 原样回写
+			md, plain, wc := "", "", 0
+			if p.MdContent != nil {
+				md = *p.MdContent
+			}
+			if p.PlainContent != nil {
+				plain = *p.PlainContent
+			}
+			if p.WordCount != nil {
+				wc = *p.WordCount
+			}
+			if err := s.drafts.UpdateContent(ctx, slug, model.PostContent{
+				Markdown:     md,
+				PlainContent: plain,
+				SearchText:   textutil.BuildSearchText(*m.Title, md),
+				WordCount:    wc,
+			}); err != nil {
+				return err
+			}
+		}
 	}
 	if err := s.drafts.UpdateMeta(ctx, slug, m); err != nil {
 		if err == store.ErrNotFound {
@@ -211,6 +270,7 @@ func (s *SpeakService) CreateSpeak(ctx context.Context, content string, ts *int6
 		}
 		return err
 	}
+	touchSite(ctx, s.site)
 	return nil
 }
 
@@ -227,13 +287,18 @@ func (s *SpeakService) UpdateSpeak(ctx context.Context, when int64, content stri
 		return apperr.New(apperr.ValidationInvalidField, "该时间戳的说说不存在",
 			fieldDetail("time", "不存在"))
 	}
+	touchSite(ctx, s.site)
 	return nil
 }
 
 // DeleteSpeak 幂等删除说说。
 func (s *SpeakService) DeleteSpeak(ctx context.Context, when int64) error {
 	_, err := s.speaks.Delete(ctx, when)
-	return err
+	if err != nil {
+		return err
+	}
+	touchSite(ctx, s.site)
+	return nil
 }
 
 // ---------------- 友链写操作（P2 部分） ----------------
@@ -252,6 +317,7 @@ func (s *LinkService) AddLink(ctx context.Context, group string, l model.Link) e
 		}
 		return err
 	}
+	touchSite(ctx, s.site)
 	return nil
 }
 
@@ -264,6 +330,7 @@ func (s *LinkService) UpdateLink(ctx context.Context, group, id string, patch st
 	if !matched {
 		return apperr.New(apperr.LinkNotFound, "分组或友链不存在", nil)
 	}
+	touchSite(ctx, s.site)
 	return nil
 }
 
@@ -273,6 +340,7 @@ func (s *LinkService) DeleteLink(ctx context.Context, group, id string) (map[str
 	if err != nil {
 		return nil, err
 	}
+	touchSite(ctx, s.site)
 	return map[string]any{"deleted": true}, nil
 }
 
@@ -295,6 +363,7 @@ func (s *LinkService) MoveLink(ctx context.Context, fromGroup, toGroup, id strin
 		}
 		return err
 	}
+	touchSite(ctx, s.site)
 	return nil
 }
 
@@ -309,6 +378,7 @@ func (s *LinkService) AddGroup(ctx context.Context, g model.LinkGroup) error {
 		}
 		return err
 	}
+	touchSite(ctx, s.site)
 	return nil
 }
 
@@ -327,6 +397,7 @@ func (s *LinkService) UpdateGroup(ctx context.Context, oldName string, g model.L
 	if !matched {
 		return apperr.New(apperr.LinkNotFound, "分组不存在", nil)
 	}
+	touchSite(ctx, s.site)
 	return nil
 }
 
@@ -336,6 +407,7 @@ func (s *LinkService) DeleteGroup(ctx context.Context, name string) (map[string]
 	if err != nil {
 		return nil, err
 	}
+	touchSite(ctx, s.site)
 	return map[string]any{"deleted": true}, nil
 }
 
@@ -496,6 +568,8 @@ func (s *LinkService) DecideApplication(ctx context.Context, id, decision, group
 	if _, err := s.apps.Decide(ctx, id, decision, reason, time.Now()); err != nil {
 		return nil, err
 	}
+	// 只有「通过」会改变站点内容（新增/修改友链）；拒绝只是状态流转，不 touch
+	touchSite(ctx, s.site)
 	mailSent := s.NotifyDecision(DecisionNotice{
 		Name: app.Name, Link: app.Link, Email: app.Email,
 		Group: group, IsModify: app.Type == 1,
@@ -508,6 +582,19 @@ func (s *LinkService) DecideApplication(ctx context.Context, id, decision, group
 // SetSiteUpdateTime 写站点更新时间（胶水默认当前；dashboard 可自定义）。
 func (s *SiteService) SetSiteUpdateTime(ctx context.Context, ts *int64) (map[string]any, error) {
 	return s.UpdateTime(ctx, ts)
+}
+
+// touchSite 是「站点内容有变更」的统一出口：刷 latestUpdateTime。
+// 失败只记日志——更新时间没写成，不能把用户的内容保存动作搞失败。
+// 规则（2026-10-28 用户定论）：文章/说说/友链的增删改、友链审批通过算内容更新；
+// 图床操作、友链申请提交不算。
+func touchSite(ctx context.Context, site *SiteService) {
+	if site == nil { // 单测里手工构造的服务可以不带 site
+		return
+	}
+	if _, err := site.Touch(ctx); err != nil {
+		slog.Warn("更新站点时间失败（不影响本次写入）", "err", err)
+	}
 }
 
 // ---------------- 小工具 ----------------

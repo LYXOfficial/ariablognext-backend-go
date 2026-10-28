@@ -197,7 +197,7 @@ func (s *ApplicationService) checkModify(ctx context.Context, targetURL, name, l
 // triggerScreening 触发 GitHub Actions 初筛。未配置 = 功能关闭 = false。
 func (s *ApplicationService) triggerScreening(id, url, name, descr string) bool {
 	sc := s.cfg.Flink.Screening
-	if !sc.Enabled || sc.Repo == "" || sc.Token == "" {
+	if !sc.Enabled || sc.Repo == "" || sc.Token == "" || sc.EventType == "" {
 		return false
 	}
 	payload := map[string]any{
@@ -208,7 +208,7 @@ func (s *ApplicationService) triggerScreening(id, url, name, descr string) bool 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	if err := platform.DispatchGitHub(ctx, sc.Repo, sc.Token, "flink-screening", payload); err != nil {
+	if err := platform.DispatchEvent(ctx, sc.Repo, sc.Token, sc.EventType, payload); err != nil {
 		// 初筛只是辅助手段，挂掉不能影响申请提交
 		slogWarnOnly("触发友链初筛失败（不影响申请）", "err", err)
 		return false

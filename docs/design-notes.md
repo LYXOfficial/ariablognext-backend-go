@@ -284,7 +284,7 @@ Vercel 的 Go 函数只带编译产物，运行时不一定有 `config.yml`。�
 | `SECRET` | JWT 签名 + 服务间门牌（`X-Internal-Token`）|
 | `S3_ENDPOINT` `S3_ACCESSKEYID` `S3_SECRETACCESSKEY` `S3_REGION` `S3_BUCKET` `S3_PUBLIC_URL` | 图床（R2 用 `us-east-1`）|
 | `SMTP_HOST` `SMTP_PORT` `SMTP_SECURE` `SMTP_USER` `SMTP_PASS` `SMTP_FROM` | 邮件 |
-| `GH_TOKEN` `GITHUB_REPO` | 友链初筛 / 链路检查 |
+| `GH_TOKEN` | 友链初筛 / 链路检查（仓库名写在 config.yml，不再读 `GITHUB_REPO`） |
 | `SF_TOKEN` | 摘要生成 |
 | `FLINK_ADMIN_EMAIL` | 申请人提醒抄送 |
 | `EMBEDDING_API_KEY` | 语义搜索（暂时空着）|
