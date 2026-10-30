@@ -272,25 +272,53 @@ func (s *SiteService) Touch(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if s.cfg != nil && s.cfg.Site.RefreshURL != "" {
-		url := strings.TrimRight(s.cfg.Site.RefreshURL, "/") + "/siteinfo"
-		go func() {
-			// 独立超时：博客侧抖动绝不能拖慢/搞挂后台的保存动作
-			reqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
-			if err != nil {
-				return
-			}
-			resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
-			if err != nil {
-				slog.Debug("通知博客刷站点缓存失败（忽略）", "url", url, "err", err)
-				return
-			}
-			_ = resp.Body.Close()
-		}()
-	}
+	// 站点时间变了，博客侧栏的「上次更新」也要立刻换；其余资源缓存由调用方
+	// 通过 Notify 按类型精确通知（posts / speaks / flinks / post/<slug>）。
+	s.Notify("siteinfo")
 	return t, nil
+}
+
+// Notify 通知博客站刷新指定资源的缓存（fire-and-forget）。
+//
+// 为什么由后端发而不是 dashboard 发：缓存失效属于「写入成功」的副作用，
+// 应该由唯一的数据写入方触发。这样外部脚本、CI、以后的其它客户端改库时
+// 也会自动失效，dashboard 不需要知道前端有哪些 cache tag，也不会因为
+// 浏览器 CORS/断网把刷新悄悄吞掉。
+//
+// kind 是博客 /refreshCache 下的路径：posts / speaks / flinks / siteinfo /
+// post/<url.PathEscape(slug)>。失败只记 Debug，绝不拖慢或搞挂保存动作；
+// 博客侧仍有 TTL 兜底。
+func (s *SiteService) Notify(kinds ...string) {
+	if s == nil || s.cfg == nil || s.cfg.Site.RefreshURL == "" {
+		return
+	}
+	base := strings.TrimRight(s.cfg.Site.RefreshURL, "/")
+	for _, kind := range kinds {
+		kind = strings.TrimLeft(kind, "/")
+		if kind == "" {
+			continue
+		}
+		target := base + "/" + kind
+		// 每个 kind 独立 goroutine：一个博客接口慢/挂，不能拖住其它资源失效
+		go s.notifyRefresh(target)
+	}
+}
+
+// notifyRefresh 是 Notify 的实际 HTTP 调用。
+// 5 秒独立超时：博客在 Vercel 冷启动时偶尔会慢，但不能反压后台请求。
+func (s *SiteService) notifyRefresh(target string) {
+	reqCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, target, nil)
+	if err != nil {
+		return
+	}
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		slog.Debug("通知博客刷缓存失败（忽略，等内容 TTL 兜底）", "url", target, "err", err)
+		return
+	}
+	_ = resp.Body.Close()
 }
 
 // UpdateTime 写入时间戳并返回写入值。

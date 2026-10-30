@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,7 +34,7 @@ func (s *PostService) CreatePost(ctx context.Context, p model.Post) (map[string]
 		}
 		return nil, err
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "posts", "post/"+url.PathEscape(p.Slug))
 	return map[string]any{"slug": p.Slug}, nil
 }
 
@@ -58,7 +59,7 @@ func (s *PostService) UpdatePostMeta(ctx context.Context, slug string, m model.P
 		}
 		return err
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "posts", "post/"+url.PathEscape(slug))
 	return nil
 }
 
@@ -105,7 +106,7 @@ func (s *PostService) UpdatePostContent(ctx context.Context, slug, markdown stri
 	if err != nil {
 		return nil, err
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "posts", "post/"+url.PathEscape(slug))
 	return map[string]any{"wordCount": wordCount}, nil
 }
 
@@ -124,7 +125,7 @@ func (s *PostService) DeletePost(ctx context.Context, slug string) (map[string]a
 			slog.Warn("清理文章向量失败（文章已删除）", "slug", slug, "err", err)
 		}
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "posts", "post/"+url.PathEscape(slug))
 	return map[string]any{"deleted": true}, nil
 }
 
@@ -270,7 +271,7 @@ func (s *SpeakService) CreateSpeak(ctx context.Context, content string, ts *int6
 		}
 		return err
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "speaks")
 	return nil
 }
 
@@ -287,7 +288,7 @@ func (s *SpeakService) UpdateSpeak(ctx context.Context, when int64, content stri
 		return apperr.New(apperr.ValidationInvalidField, "该时间戳的说说不存在",
 			fieldDetail("time", "不存在"))
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "speaks")
 	return nil
 }
 
@@ -297,7 +298,7 @@ func (s *SpeakService) DeleteSpeak(ctx context.Context, when int64) error {
 	if err != nil {
 		return err
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "speaks")
 	return nil
 }
 
@@ -317,7 +318,7 @@ func (s *LinkService) AddLink(ctx context.Context, group string, l model.Link) e
 		}
 		return err
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "flinks")
 	return nil
 }
 
@@ -330,7 +331,7 @@ func (s *LinkService) UpdateLink(ctx context.Context, group, id string, patch st
 	if !matched {
 		return apperr.New(apperr.LinkNotFound, "分组或友链不存在", nil)
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "flinks")
 	return nil
 }
 
@@ -340,7 +341,7 @@ func (s *LinkService) DeleteLink(ctx context.Context, group, id string) (map[str
 	if err != nil {
 		return nil, err
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "flinks")
 	return map[string]any{"deleted": true}, nil
 }
 
@@ -363,7 +364,7 @@ func (s *LinkService) MoveLink(ctx context.Context, fromGroup, toGroup, id strin
 		}
 		return err
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "flinks")
 	return nil
 }
 
@@ -378,7 +379,7 @@ func (s *LinkService) AddGroup(ctx context.Context, g model.LinkGroup) error {
 		}
 		return err
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "flinks")
 	return nil
 }
 
@@ -397,7 +398,7 @@ func (s *LinkService) UpdateGroup(ctx context.Context, oldName string, g model.L
 	if !matched {
 		return apperr.New(apperr.LinkNotFound, "分组不存在", nil)
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "flinks")
 	return nil
 }
 
@@ -407,7 +408,7 @@ func (s *LinkService) DeleteGroup(ctx context.Context, name string) (map[string]
 	if err != nil {
 		return nil, err
 	}
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "flinks")
 	return map[string]any{"deleted": true}, nil
 }
 
@@ -569,7 +570,7 @@ func (s *LinkService) DecideApplication(ctx context.Context, id, decision, group
 		return nil, err
 	}
 	// 只有「通过」会改变站点内容（新增/修改友链）；拒绝只是状态流转，不 touch
-	touchSite(ctx, s.site)
+	touchSite(ctx, s.site, "flinks")
 	mailSent := s.NotifyDecision(DecisionNotice{
 		Name: app.Name, Link: app.Link, Email: app.Email,
 		Group: group, IsModify: app.Type == 1,
@@ -588,13 +589,15 @@ func (s *SiteService) SetSiteUpdateTime(ctx context.Context, ts *int64) (map[str
 // 失败只记日志——更新时间没写成，不能把用户的内容保存动作搞失败。
 // 规则（2026-10-28 用户定论）：文章/说说/友链的增删改、友链审批通过算内容更新；
 // 图床操作、友链申请提交不算。
-func touchSite(ctx context.Context, site *SiteService) {
+func touchSite(ctx context.Context, site *SiteService, refresh ...string) {
 	if site == nil { // 单测里手工构造的服务可以不带 site
 		return
 	}
 	if _, err := site.Touch(ctx); err != nil {
 		slog.Warn("更新站点时间失败（不影响本次写入）", "err", err)
 	}
+	// 时间的更新由 Touch 顺带通知 siteinfo；具体资源缓存按类型精确失效。
+	site.Notify(refresh...)
 }
 
 // ---------------- 小工具 ----------------
