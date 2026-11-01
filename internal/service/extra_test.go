@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -195,5 +198,57 @@ func TestMailTemplatesRenderEscapes(t *testing.T) {
 		if !strings.Contains(h, "border-radius:18px") {
 			t.Errorf("第 %d 封邮件缺圆角卡片", i+1)
 		}
+	}
+}
+
+// 访客首访新文章：GET 摘要缓存 miss 时必须生成一次并落库，
+// 第二次请求走缓存、不能再打上游（2026-11-02 线上新文章摘要加载失败）。
+func TestSummaryGetGeneratesOnMiss(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"生成的摘要"}}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := serviceConfig()
+	cfg.AI.Summary = config.SummaryConfig{
+		Enabled: true, Endpoint: srv.URL, Model: "m", APIKey: "k",
+		Timeout: config.Duration(5 * time.Second), ChunkSize: 6000, MaxChunks: 6,
+	}
+	st := fake.New()
+	st.SetPosts([]model.Post{
+		{Slug: "new", Title: "新文章", MdContent: "正文"},
+		{Slug: "bad", Title: "另一篇", MdContent: "正文"},
+	})
+	svc := NewSet(cfg, st)
+	ctx := context.Background()
+
+	out, err := svc.Posts.SummaryGet(ctx, "new")
+	if err != nil {
+		t.Fatalf("首次访问应生成成功：%v", err)
+	}
+	if out["summary"] != "生成的摘要" {
+		t.Errorf("summary = %v", out["summary"])
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("上游应被调用 1 次，实际 %d", got)
+	}
+
+	// 第二次（另一个访客）命中缓存，不再打上游
+	out, err = svc.Posts.SummaryGet(ctx, "new")
+	if err != nil || out["summary"] != "生成的摘要" {
+		t.Fatalf("第二次应命中缓存：%v %v", out, err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("缓存命中后上游调用次数应仍为 1，实际 %d", got)
+	}
+
+	// 生成失败：upstream.failed，且不落缓存（下次还能重试）
+	srv.Close()
+	if _, err := svc.Posts.SummaryGet(ctx, "bad"); err == nil ||
+		!strings.Contains(err.Error(), "upstream.failed") {
+		t.Errorf("上游失败应报 upstream.failed：%v", err)
 	}
 }

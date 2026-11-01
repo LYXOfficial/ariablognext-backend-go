@@ -179,8 +179,12 @@ func (s *PostService) Related(ctx context.Context, slug string, limit int) ([]mo
 	return s.posts.Related(ctx, slug, limit)
 }
 
-// SummaryGet 公开摘要：缓存优先；无缓存且摘要服务未启用时报 upstream.failed。
-// P3 接入 SiliconFlow 后，未命中的生成逻辑实现在同一位置（每篇最多生成一次）。
+// SummaryGet 公开摘要：缓存优先；未命中时生成一次并落库。
+//
+// 访客第一次打开新文章靠的就是这里（旧 get/post/postSummary 同语义）；
+// 只有 ai.summary 未启用时才直接报 upstream.failed，别让用户以为文章坏了。
+// 冷却不在这里做：一旦生成成功就有缓存，后续请求不会再到上游；生成失败由
+// 前端提示、管理员用 POST /posts/summary 强制重试。
 func (s *PostService) SummaryGet(ctx context.Context, slug string) (map[string]any, error) {
 	if _, err := s.posts.BySlug(ctx, slug); err != nil {
 		if err == store.ErrNotFound {
@@ -195,8 +199,10 @@ func (s *PostService) SummaryGet(ctx context.Context, slug string) (map[string]a
 	if err != store.ErrNotFound {
 		return nil, err
 	}
-	// 未命中：本机 ai.summary 关闭时明说「未启用」，别让用户以为文章坏了
-	return nil, apperr.New(apperr.UpstreamFailed, "摘要生成服务未启用，暂无该文章的摘要缓存", nil)
+	if !s.llm.Enabled() {
+		return nil, apperr.New(apperr.UpstreamFailed, "摘要生成服务未启用，暂无该文章的摘要缓存", nil)
+	}
+	return s.SummaryGenerate(ctx, slug)
 }
 
 // SummaryCached 只读缓存、绝不生成（后台预览用，对应旧 `GET /update/post/summary`）。
@@ -398,10 +404,10 @@ func splitKeywords(raw string) []string {
 	return out
 }
 
-// summaryCooldown 前的生成尝试也被视为「刚试过」，冷却期内不重复打上游（config.ai.summary.cooldown）。
-//
 // SummaryGenerate 生成并落库摘要（GET miss 与 POST 强制共用）。
 // 长文分块、上游超时/限流都在 platform.LLM 里处理。
+// 并发首访同一篇会各触发一次生成（与旧后端一致）：生成成功即写缓存，
+// 不做进程内 singleflight——博客规模下多打一次上游比引入等待/超时状态机更划算。
 func (s *PostService) SummaryGenerate(ctx context.Context, slug string) (map[string]any, error) {
 	// 先判文章存在：文章不存在是 404，与摘要服务是否配置无关（错误码语义要准）
 	p, err := s.posts.BySlug(ctx, slug)
