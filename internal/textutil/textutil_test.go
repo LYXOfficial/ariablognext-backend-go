@@ -216,6 +216,11 @@ func TestSpeakPlainContent(t *testing.T) {
 		{"<b>粗体</b>文字", "粗体文字"},
 		{"纯文本不变", "纯文本不变"},
 		{"看看 <a href=\"https://x\">这个</a> 和 <img src=\"y.png\">", "看看 [链接] 和 [图片]"},
+		// 后台插入的 owo 表情与普通插图要分开
+		{"<img class=\"bb-emoji\" src=\"https://cdn.example/a.png\">", "[表情]"},
+		{"<img src=\"https://cdn.example/a.png\" class=\"bb-emoji\">", "[表情]"},
+		{"<img class=\"photo bb-emoji\" src=\"https://cdn.example/a.png\">", "[表情]"},
+		{"表情 <img class=\"bb-emoji\" src=\"a.png\"> 和插图 <img src=\"b.png\">", "表情 [表情] 和插图 [图片]"},
 	}
 	for _, c := range cases {
 		if got := SpeakPlainContent(c.in); got != c.want {
